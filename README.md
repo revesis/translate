@@ -259,3 +259,7 @@ journalctl -u gt-server -f
 
 Edit `WorkingDirectory`, `ExecStart`, `GT_API_KEY` and `GT_PROXY` in the unit
 first (see `gt-server.service`).
+
+## License
+
+[0BSD](LICENSE)
