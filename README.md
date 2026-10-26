@@ -136,7 +136,7 @@ curl -X POST http://127.0.0.1:8770/translate \
 | `GT_HOST` | `127.0.0.1` | bind address; set `0.0.0.0` to accept remote calls |
 | `GT_PORT` | `8770` | listen port |
 | `GT_API_KEY` | *(unset)* | if set, all routes except `/health` need `Authorization: Bearer <key>` |
-| `GT_DEFAULT_TL` | `zh-CN` | target language when the request omits `tl` |
+| `GT_DEFAULT_TL` | `zh-CN` | target language when a request omits `tl`; also the CLI's default for `-tl` |
 | `GT_PROXY` | *(unset)* | upstream proxy, e.g. `http://127.0.0.1:7890` (env `HTTPS_PROXY` is honoured when unset) |
 | `GT_ENDPOINT` | Google | override the upstream URL (mirror / self-hosted gateway) |
 
@@ -156,6 +156,15 @@ python3 gt.py "hello" --json                 # machine-readable result
 ```
 
 Exit codes: `0` ok, `2` upstream rate limited, `3` upstream error.
+
+`-tl` defaults to `$GT_DEFAULT_TL` (falling back to `zh-CN`) — the same variable
+that sets the server default, so one env var configures both the CLI and the
+HTTP API. An explicit `-tl` always wins:
+
+```bash
+GT_DEFAULT_TL=ja python3 gt.py "The server is ready."          # サーバーの準備ができました。
+GT_DEFAULT_TL=ja python3 gt.py "The server is ready." -tl ko   # 서버가 준비되었습니다.
+```
 
 ## Throughput, measured here
 

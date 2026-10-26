@@ -12,16 +12,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from gt_client import RateLimited, TranslateError, Translator
 
 
 def main() -> int:
+    # Same default the server uses, so one env var configures both surfaces.
+    default_tl = os.environ.get("GT_DEFAULT_TL") or "zh-CN"
     ap = argparse.ArgumentParser(description="Google Translate over plain HTTP (no browser).")
     ap.add_argument("text", nargs="*", help="text to translate; omit to read stdin")
     ap.add_argument("-sl", "--source", default="auto", help="source language (default: auto)")
-    ap.add_argument("-tl", "--target", default="zh-CN", help="target language (default: zh-CN)")
+    ap.add_argument("-tl", "--target", default=default_tl,
+                    help=f"target language (default: $GT_DEFAULT_TL or zh-CN, now: {default_tl})")
     ap.add_argument("-f", "--file", help="read input from a file")
     ap.add_argument("--out", help="write translated text to a file")
     ap.add_argument("--json", action="store_true", help="print the full JSON result")
