@@ -1,0 +1,11 @@
+# Keep the image context to the runtime files only.
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.env
+.env.*
+README.md
+selftest.py
+docker-compose.yml
+gt-server.service

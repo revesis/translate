@@ -1,0 +1,57 @@
+# docker compose / podman-compose
+#
+#   cp .env.example .env      # optional: set GT_API_KEY / GT_PROXY
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8770/health
+#
+# Published on loopback only. Set GT_API_KEY before you change that, otherwise
+# anyone who can reach the port inherits your Google translation quota.
+services:
+  gt-api:
+    build: .
+    image: gt-api:1.0
+    container_name: gt-api
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8770:8770"
+
+    environment:
+      # Inside the container the server must bind 0.0.0.0 or the published port
+      # cannot reach it; exposure is limited by the host side of `ports` above.
+      GT_HOST: "0.0.0.0"
+      GT_PORT: "8770"
+      GT_DEFAULT_TL: "${GT_DEFAULT_TL:-zh-CN}"
+      # Optional bearer token. Empty = no auth.
+      GT_API_KEY: "${GT_API_KEY:-}"
+      # Needed only when this host cannot reach Google directly.
+      GT_PROXY: "${GT_PROXY:-}"
+      # Point at a mirror / self-hosted gateway if you have one.
+      GT_ENDPOINT: "${GT_ENDPOINT:-}"
+
+    # The app writes nothing: read-only rootfs + a small /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8770/health', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

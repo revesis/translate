@@ -1,0 +1,11 @@
+# secrets / local config
+.env
+.env.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# container / build noise
+*.log

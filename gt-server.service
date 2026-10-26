@@ -1,0 +1,29 @@
+[Unit]
+Description=Google Translate local HTTP API (no browser)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# --- edit these two paths ---
+WorkingDirectory=/root/codex/google-translate
+ExecStart=/usr/bin/python3 -u /root/codex/google-translate/gt_server.py
+# Keep the port on loopback unless you really need remote access.
+Environment=GT_HOST=127.0.0.1
+Environment=GT_PORT=8770
+Environment=GT_DEFAULT_TL=zh-CN
+# Uncomment to require a bearer token (generate with: openssl rand -hex 16):
+#Environment=GT_API_KEY=change-me
+# Uncomment when this host cannot reach Google directly:
+#Environment=GT_PROXY=http://127.0.0.1:7890
+
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/root/codex/google-translate
+
+[Install]
+WantedBy=multi-user.target
