@@ -169,21 +169,55 @@ Exit codes: `0` ok, `2` upstream rate limited, `3` upstream error.
 into one shared batch pipeline, so N short items cost one upstream request, not
 N.
 
+Same server deployed behind Cloudflare (curl, warm connection):
+
+| Request | Time |
+| --- | --- |
+| `GET /translate` (one short sentence) | ~2.2 s |
+| `POST /translate/batch`, 10 items | ~1.0 s |
+| `POST /translate/batch`, 50 items | ~1.0 s (same as 10 — one upstream batch) |
+| `POST /translate`, 201-line / 15.7 KB document | ~1.6 s |
+| `GET /health` | ~1.2 s |
+
 ## Behind a reverse proxy or CDN
 
-Measured against a Cloudflare-fronted deployment of this exact server:
+Measured against a Cloudflare-fronted deployment of exactly this server.
 
-* **A plain Python `User-Agent` (`Python-urllib/3.x`, `python-requests/...`) gets
-  HTTP 403 `error code: 1010`** from Cloudflare's Browser Integrity Check —
-  unrelated to this app. Send a normal browser `User-Agent`, or add a WAF rule
-  to skip Browser Integrity Check / managed rules for the API path.
-* Even with a browser UA, non-browser TLS fingerprints (OpenSSL from Python) sit
-  on a slower path: ~1.5–3 s per call, with occasional 20 s+ spikes. `curl`'s
-  fingerprint is treated as a normal client and stays around 1–2 s.
-* Request bodies above ~100 KB stall (20 s at 100 KB, 90 s at 500 KB) and 1 MB+
-  ends in Cloudflare 524; a 3 MB body is rejected by the origin proxy (413).
-  Keep one API call to a few tens of KB — the upstream batching already handles
-  documents far larger than that server-side.
+**The CDN's bot protection must be skipped for the API path.** With Cloudflare's
+defaults, a plain Python `User-Agent` (`Python-urllib/3.x`, `python-requests/...`)
+is answered with **HTTP 403 `error code: 1010`** (Browser Integrity Check) — 3/3
+requests, nothing to do with this app. A WAF custom rule that skips Browser
+Integrity Check and managed rules for the API prefix fixed it completely: 5/5
+Python requests then returned 200.
+
+Skipping it also removed every payload-size stall. Same deployment, before →
+after:
+
+| Request body | Before the skip rule | After the skip rule |
+| --- | --- | --- |
+| 100 KB | 200, 21 s | 200, 8.3 s |
+| 500 KB | 200, 93 s | 200, 27 s |
+| 1 MB | **524** (CDN gave up at 100 s) | 200, 48 s |
+| 1.3 MB | — | 200, 55 s |
+| 2.2 MB | — | 413 from the origin proxy |
+
+So the practical ceiling is the origin nginx `client_max_body_size` (~2 MB,
+which matches `MAX_BODY` in `gt_server.py`), not the CDN. Larger bodies are slow
+rather than broken: the client splits them into many upstream batches. Keep one
+API call to a few tens of KB and let the server-side batching do the work.
+
+**A "random 20 s+" call is usually the caller's network, not the server.** On one
+test host, the deployed hostname resolved to two Cloudflare anycast IPv4
+addresses: `104.21.78.103` timed out on TCP connect (8 s socket timeout, ~21 s
+until the OS gave up) while `172.67.220.56` connected in 0.05 s, and IPv6 had no
+route at all. `socket.create_connection()` — what `urllib` uses — walks the
+`getaddrinfo` list in order, so it sat on the dead address for 21 s on *every*
+call, with any User-Agent. `curl` finished in 1–2 s because Happy Eyeballs tries
+addresses in parallel. Connecting straight to the healthy address with the same
+Python client and the default `User-Agent` gave 200 in 2.4–3.4 s. Confirm with
+`curl -w '%{remote_ip} %{time_connect}'` before blaming the deployment; on the
+client side, prefer a resolver/library with Happy Eyeballs (or pin IPv4 and
+retry the next address).
 
 ## Caveats — read before relying on it
 
