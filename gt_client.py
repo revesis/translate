@@ -161,39 +161,63 @@ class Translator:
 
     # ---------------- public ----------------
 
-    def translate(self, text: str, sl: str = "auto", tl: str = "zh-CN") -> dict:
-        """Translate a whole block, keeping line breaks and blank lines."""
+    @staticmethod
+    def _plan(text: str) -> tuple[list[str], dict[int, list[str]]]:
+        """Split a block into lines plus the translatable pieces of each line."""
         lines = text.split("\n")
         per_line: dict[int, list[str]] = {}
         for li, line in enumerate(lines):
             if line.strip():
                 per_line[li] = _line_pieces(line)
+        return lines, per_line
 
-        batch: list[list] = []                      # [[text, line_idx, piece_idx], ...]
+    def _run_batches(self, texts: list[str], sl: str, tl: str) -> list[tuple[str, str]]:
+        """Translate a flat list of pieces -> [(text, lang)] in input order."""
+        results: list[str] = [""] * len(texts)
+        langs: list[str] = [""] * len(texts)
+        batch: list[list] = []                     # [[piece, index], ...]
         enc = 0
-        done: dict[tuple[int, int], str] = {}
-        langs: list[str] = []
 
         def flush() -> None:
             nonlocal batch, enc
             if not batch:
                 return
             rows = self._request([b[0] for b in batch], sl, tl)
-            for (_, li, pi), (tr, lang) in zip(batch, rows):
-                done[(li, pi)] = tr
-                if lang and lang != _UNKNOWN:
-                    langs.append(lang)
+            for (_, idx), (tr, lang) in zip(batch, rows):
+                results[idx] = tr
+                langs[idx] = lang if lang and lang != _UNKNOWN else ""
             batch, enc = [], 0
 
+        for idx, piece in enumerate(texts):
+            q = _quote(piece)
+            if batch and (len(batch) >= MAX_ITEMS_PER_REQUEST
+                          or enc + len(q) > MAX_ENCODED_BYTES):
+                flush()
+            batch.append([piece, idx])
+            enc += len(q)
+        flush()
+        return list(zip(results, langs))
+
+    @staticmethod
+    def _detected(langs: list[str], sl: str) -> str:
+        seen = [l for l in langs if l]
+        if sl != "auto" or not seen:
+            return ""
+        return max(set(seen), key=seen.count)
+
+    def translate(self, text: str, sl: str = "auto", tl: str = "zh-CN") -> dict:
+        """Translate a whole block, keeping line breaks and blank lines."""
+        lines, per_line = self._plan(text)
+
+        flat: list[str] = []
+        slots: list[tuple[int, int]] = []
         for li, pieces in per_line.items():
             for pi, piece in enumerate(pieces):
-                q = _quote(piece)
-                if batch and (len(batch) >= MAX_ITEMS_PER_REQUEST
-                              or enc + len(q) > MAX_ENCODED_BYTES):
-                    flush()
-                batch.append([piece, li, pi])
-                enc += len(q)
-        flush()
+                flat.append(piece)
+                slots.append((li, pi))
+
+        rows = self._run_batches(flat, sl, tl) if flat else []
+        done = {slot: row[0] for slot, row in zip(slots, rows)}
 
         out_lines: list[str] = []
         for li, line in enumerate(lines):
@@ -203,17 +227,44 @@ class Translator:
             pieces = per_line.get(li) or [line]
             out_lines.append("".join(done.get((li, pi), p) for pi, p in enumerate(pieces)))
 
-        detected = ""
-        if sl == "auto" and langs:
-            detected = max(set(langs), key=langs.count)
-        return {"text": "\n".join(out_lines), "sl": sl, "tl": tl, "detected": detected}
+        return {
+            "text": "\n".join(out_lines),
+            "sl": sl,
+            "tl": tl,
+            "detected": self._detected([row[1] for row in rows], sl),
+        }
 
     def translate_many(self, items: list[str], sl: str = "auto", tl: str = "zh-CN") -> dict:
-        outs, dets = [], []
-        for it in items:
-            r = self.translate(it, sl=sl, tl=tl)
-            outs.append(r["text"])
-            dets.append(r["detected"])
+        """Translate many independent blocks in as few upstream requests as possible."""
+        plans = [self._plan(it) for it in items]
+
+        flat: list[str] = []
+        owner: list[tuple[int, int, int]] = []      # (item_idx, line_idx, piece_idx)
+        for ii, (_lines, per_line) in enumerate(plans):
+            for li, pieces in per_line.items():
+                for pi, piece in enumerate(pieces):
+                    flat.append(piece)
+                    owner.append((ii, li, pi))
+
+        rows = self._run_batches(flat, sl, tl) if flat else []
+        done = {slot: row[0] for slot, row in zip(owner, rows)}
+
+        langs_per_item: dict[int, list[str]] = {}
+        for (ii, _li, _pi), row in zip(owner, rows):
+            langs_per_item.setdefault(ii, []).append(row[1])
+
+        outs = []
+        for ii, (lines, per_line) in enumerate(plans):
+            cols: list[str] = []
+            for li, line in enumerate(lines):
+                if not line.strip():
+                    cols.append(line)
+                    continue
+                pieces = per_line.get(li) or [line]
+                cols.append("".join(done.get((ii, li, pi), p) for pi, p in enumerate(pieces)))
+            outs.append("\n".join(cols))
+
+        dets = [self._detected(langs_per_item.get(ii, []), sl) for ii in range(len(items))]
         return {"translations": outs, "detected": dets, "sl": sl, "tl": tl}
 
 

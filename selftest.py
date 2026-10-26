@@ -117,6 +117,14 @@ def main() -> int:
           all(h["url_bytes"] < MAX_ENCODED_BYTES + 500 for h in hits),
           repr([h["url_bytes"] for h in hits]))
 
+    # 6b. translate_many must batch all items into ONE upstream request
+    hits.clear()
+    many_items = [f"item {i}" for i in range(10)]
+    r = tr.translate_many(many_items, tl="zh-CN")
+    check("translate_many keeps item order and count",
+          r["translations"] == [f"T(item {i})" for i in range(10)], repr(r["translations"]))
+    check("translate_many uses a single upstream request", len(hits) == 1, str(len(hits)))
+
     # 7. retry after the anti-bot page
     hits.clear()
     MODE["fail_first"] = 2

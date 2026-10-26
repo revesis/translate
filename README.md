@@ -86,13 +86,13 @@ through the published port, `401` without the bearer token and `200` with it,
 ## Tests
 
 ```bash
-python3 selftest.py      # 15 checks, all offline against a fake upstream
+python3 selftest.py      # 17 checks, all offline against a fake upstream
 ```
 
 Covers response-shape parsing (auto vs explicit `sl`), newline/blank-line
 preservation, long-line splitting, batching caps (item count + encoded bytes,
-including CJK), retry after the anti-bot HTML page, and the `RateLimited`
-give-up path.
+including CJK), single-request batching for multi-item calls, retry after the
+anti-bot HTML page, and the `RateLimited` give-up path.
 
 ## Quick start
 
@@ -162,8 +162,28 @@ Exit codes: `0` ok, `2` upstream rate limited, `3` upstream error.
 | Input | Time | Upstream requests |
 | --- | --- | --- |
 | 201-line English file, 21 292 chars | ~5.0 s | 5 (50 lines / 6 KB each) |
+| `/translate/batch` with 10 items | ~0.5 s | 1 (all items flattened into one batch) |
 | single line, 3 500 chars (no punctuation) | ~1.2 s | 1 (3 segments, sentence-cut) |
-| 3-item `/translate/batch` | <1 s | 1 |
+
+`/translate/batch` and `translate_many()` flatten every item's lines and pieces
+into one shared batch pipeline, so N short items cost one upstream request, not
+N.
+
+## Behind a reverse proxy or CDN
+
+Measured against a Cloudflare-fronted deployment of this exact server:
+
+* **A plain Python `User-Agent` (`Python-urllib/3.x`, `python-requests/...`) gets
+  HTTP 403 `error code: 1010`** from Cloudflare's Browser Integrity Check —
+  unrelated to this app. Send a normal browser `User-Agent`, or add a WAF rule
+  to skip Browser Integrity Check / managed rules for the API path.
+* Even with a browser UA, non-browser TLS fingerprints (OpenSSL from Python) sit
+  on a slower path: ~1.5–3 s per call, with occasional 20 s+ spikes. `curl`'s
+  fingerprint is treated as a normal client and stays around 1–2 s.
+* Request bodies above ~100 KB stall (20 s at 100 KB, 90 s at 500 KB) and 1 MB+
+  ends in Cloudflare 524; a 3 MB body is rejected by the origin proxy (413).
+  Keep one API call to a few tens of KB — the upstream batching already handles
+  documents far larger than that server-side.
 
 ## Caveats — read before relying on it
 
