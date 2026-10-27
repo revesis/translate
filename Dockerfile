@@ -24,13 +24,23 @@ ENV PYTHONUNBUFFERED=1 \
 
 # chromium for the botguard realm; fonts so its canvas/font probes look like a
 # desktop; the rest are chromium's runtime deps that slim does not ship.
+# One layer: deleting files in a later RUN does not shrink the image.
+# The mesa software-GL stack (~192 MB of libLLVM/libgallium/libz3) is dropped;
+# chromium then renders through its bundled swiftshader. Verified against the real
+# RPC: the token is still accepted. chrome_crashpad_handler must stay or chromium
+# aborts at start-up, and libVkLayer_khronos_validation.so is debug-only.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium \
       ca-certificates \
       fonts-liberation \
       fonts-dejavu-core \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /usr/lib/chromium/libVkLayer_khronos_validation.so \
+ && rm -rf /usr/share/doc /usr/share/man /usr/share/lintian \
+ && (dpkg --purge --force-depends \
+        libgl1-mesa-dri mesa-libgallium libglx-mesa0 libllvm19 libz3-4 >/dev/null 2>&1 || true) \
+ && apt-get clean
 
 # Only the signer needs a third-party package (CDP over websockets).
 RUN pip install --no-cache-dir "websockets>=12,<14"

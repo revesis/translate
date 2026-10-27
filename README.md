@@ -92,12 +92,12 @@ podman-compose up -d
 podman inspect gt-api --format '{{.State.Health.Status}}'   # must say healthy
 ```
 
-One image, one service (`~853 MB`, almost all of it chromium):
+One image, one service (`~626 MB`, almost all of it chromium):
 
 | image | size | what it is |
 | --- | --- | --- |
 | `gt-api:1.0` | ~124 MB | text only (`GT_BROWSER=0`): python:3.12-slim, no browser |
-| `gt-api:1.0` | ~853 MB | default: adds chromium, image OCR works |
+| `gt-api:1.0` | ~626 MB | default: adds chromium, image OCR works |
 
 Chromium is a **child process of the API**, not a second container and not a second
 HTTP hop: `bgr_sidecar.LocalSigner` starts it lazily on the first `/translate/image`
@@ -110,13 +110,30 @@ signer picks at random and keeps to itself.
 Measured here (single container, warm):
 
     /translate?q=hello           ~0.5 s
-    /translate/image  (cold)     25.8 s   browser start + build fetch
-    /translate/image  (warm)      5.6 s   OCR text + translation
+    /translate/image  (cold)     19.6 s   browser start + build fetch
+    /translate/image  (warm)      5.1 s   OCR text + translation
 
 `GT_BROWSER=0` drops image OCR and keeps the text API; text translation never
 touches the browser. `GT_SIGNER_URL=http://host:8771` points at a *remote* signer
 instead (that is the split deployment, `Dockerfile.sidecar` — still supported for
 running the browser on a different host).
+
+### Where the 626 MB goes, and what was cut
+
+The image installs Debian's `chromium` and then prunes, in the *same* layer (a later
+`RUN rm` would not shrink anything):
+
+| removed | size | why it is safe |
+| --- | --- | --- |
+| mesa software GL (`libllvm19`, `mesa-libgallium`, `libglx-mesa0`, `libgl1-mesa-dri`, `libz3-4`) | ~192 MB | chromium falls back to its bundled swiftshader; the token is still accepted by the RPC (verified) |
+| `libVkLayer_khronos_validation.so` | 23 MB | Vulkan validation layer, debug only |
+| `/usr/share/doc`, `/usr/share/man`, lintian | ~5 MB | nothing reads them |
+
+`chrome_crashpad_handler` **must stay**: chromium aborts at start-up with
+`posix_spawn .../chrome_crashpad_handler: No such file or directory` if it is removed
+(3 MB, not worth the trap).
+
+Full chromium is still required - see below.
 
 `chrome-headless-shell` is **not** a drop-in replacement: it mints a token of the
 normal length but Google answers with the image echo only. The full chromium binary
