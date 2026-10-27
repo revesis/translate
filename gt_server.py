@@ -19,6 +19,7 @@ serves one client's traffic at a time.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -26,6 +27,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gt_client import RateLimited, TranslateError, Translator
+from gt_image import ImageTranslateError, ImageTranslator
 
 HOST = os.environ.get("GT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GT_PORT", "8770"))
@@ -52,6 +54,8 @@ _tr_kwargs: dict = {"proxy": GT_PROXY}
 if GT_ENDPOINT:
     _tr_kwargs["endpoint"] = GT_ENDPOINT
 TR = Translator(**_tr_kwargs)
+# Image OCR needs a botguard signer; point GT_SIGNER_URL at bgr_sidecar.py.
+IMAGE = ImageTranslator(signer_url=os.environ.get("GT_SIGNER_URL") or None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -146,6 +150,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(400, "bad_request", "field 'text' must be a non-empty string")
                 return
             self._do_translate(text, sl, tl)
+            return
+        if path == "/translate/image":
+            img = data.get("image_b64") or data.get("image")
+            if not isinstance(img, str) or not img:
+                self._err(400, "bad_request", "field 'image_b64' must be a base64 string")
+                return
+            try:
+                raw = base64.b64decode(img, validate=False)
+            except Exception:  # noqa: BLE001
+                self._err(400, "bad_request", "image_b64 is not valid base64")
+                return
+            try:
+                res = IMAGE.translate_image(raw, sl=sl, tl=tl)
+            except ImageTranslateError as e:
+                self._err(502, "upstream_error", str(e))
+                return
+            self._send(200, res)
             return
         if path == "/translate/batch":
             items = data.get("items")

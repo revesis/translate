@@ -41,12 +41,36 @@ sentence boundaries (`MAX_SEGMENT_CHARS = 1400`) and re-joined.
 gt_client.py   core client: batching, line structure, retry/backoff, throttling
 gt_server.py   local HTTP API (stdlib ThreadingHTTPServer)
 gt.py          CLI (same code path as the API)
+gt_image.py    image OCR + translate (needs bgr_sidecar.py for a trusted token)
+bgr_sidecar.py botguard signing sidecar: headless Chrome mints the batchexecute header
 selftest.py    offline tests against a fake upstream (no network, no Google calls)
 Dockerfile     python:3.12-slim, non-root uid 10001, HEALTHCHECK baked in
 docker-compose.yml  loopback port, read-only rootfs, cap_drop ALL, healthcheck
 .env.example   GT_API_KEY / GT_PROXY / GT_ENDPOINT template
 gt-server.service  systemd unit example (bare-metal alternative)
 ```
+
+## Image OCR (`/translate/image`)
+
+`POST /translate/image {"image_b64": "...", "tl": "zh-CN"}` returns
+`{"text", "translation", "detected", "found_text"}`.
+
+Google only returns the OCR text when the batchexecute request carries a valid
+`X-Goog-BatchExecute-Bgr` botguard token, and that token must be minted by Google's own
+VM inside a real browser. `bgr_sidecar.py` does exactly that with a windowless Chrome and
+exposes it over HTTP:
+
+```bash
+python3 bgr_sidecar.py --port 8771 --chrome-port 9501      # needs a chrome binary
+GT_SIGNER_URL=http://127.0.0.1:8771 python3 gt_server.py    # image endpoint enabled
+```
+
+Without `GT_SIGNER_URL` the endpoint still answers, but Google echoes the image back
+(`found_text: false`). Two things are mandatory and easy to get wrong: the header value
+must be the wrapped array `[";TOKEN",null,null,214,4,null,null,0,"2"]` (a bare token is
+silently downgraded), and the request must carry Chrome's `sec-ch-ua-*` client hints with
+a matching User-Agent. Cookies are not required. See the skill notes for the full
+investigation (what the VM fingerprints, and why jsdom can never mint a trusted token).
 
 ## Docker
 
@@ -64,9 +88,26 @@ OCI output:
 
 ```bash
 podman build --format docker -t gt-api:1.0 .
+podman build --format docker -f Dockerfile.sidecar -t gt-bgr:1.0 .
 podman-compose up -d
 podman inspect gt-api --format '{{.State.Health.Status}}'   # must say healthy
 ```
+
+Two images, two services:
+
+| image | service | size | what it is |
+| --- | --- | --- | --- |
+| `gt-api:1.0` | `gt-api` | ~124 MB | python:3.12-slim, text API + `/translate/image` |
+| `gt-bgr:1.0` | `bgr` | ~865 MB | debian-slim + chromium, mints the botguard token |
+
+`bgr` publishes **no** ports: `gt-api` reaches it as `http://bgr:8771` over the compose
+network, so the browser is not exposed to anything that can reach the host. Chromium
+needs a writable `HOME` and profile dir even with a read-only rootfs, hence
+`HOME=/tmp` in the image plus a 512 MB `tmpfs` and `shm_size: 512m`. It runs with
+`--no-sandbox` (required in containers) together with `cap_drop: ALL`.
+
+Set `GT_SIGNER_URL=""` to drop image OCR and keep the text API only; text translation
+never touches the sidecar.
 
 What the compose service pins down:
 
@@ -79,9 +120,33 @@ What the compose service pins down:
 | `HEALTHCHECK` | `python3 -c urllib.../health` | slim image has no curl; `/health` is unauthenticated |
 | `PYTHONDONTWRITEBYTECODE` | `1` | keeps `__pycache__` from breaking a read-only rootfs |
 
-Verified here: image builds, container reaches `healthy`, real translation
+Verified here: both images build, both containers reach `healthy`, real translation
 through the published port, `401` without the bearer token and `200` with it,
-`.env` interpolation into `GT_API_KEY` works.
+`.env` interpolation into `GT_API_KEY` works, and `/translate/image` returns OCR text
+through `bgr` in ~3.6 s.
+
+### Compose gotchas (hit for real)
+
+- `podman-compose up -d --build` builds with the **OCI** format, so any image-level
+  `HEALTHCHECK` is dropped with a warning. The service-level `healthcheck:` in the
+  compose file still applies, so containers stay `healthy`, but if you want the
+  image itself to carry the check, build first and then bring it up without `--build`:
+
+  ```bash
+  podman build --format docker -t gt-api:1.0 .
+  podman build --format docker -f Dockerfile.sidecar -t gt-bgr:1.0 .
+  podman-compose up -d
+  ```
+
+- Re-running `--build` while the old containers still exist fails with
+  `container name "gt-bgr" is already in use` or a pod-membership error. Run
+  `podman-compose down` (or `podman rm -f gt-api gt-bgr`) first.
+
+- `bgr` has no published port by design. To poke it directly:
+
+  ```bash
+  podman exec gt-bgr curl -s http://127.0.0.1:8771/health
+  ```
 
 ## Tests
 

@@ -7,6 +7,7 @@
 # Published on loopback only. Set GT_API_KEY before you change that, otherwise
 # anyone who can reach the port inherits your Google translation quota.
 services:
+  # Text + image API. Image OCR calls the signing sidecar below.
   gt-api:
     build: .
     image: gt-api:1.0
@@ -28,6 +29,11 @@ services:
       GT_PROXY: "${GT_PROXY:-}"
       # Point at a mirror / self-hosted gateway if you have one.
       GT_ENDPOINT: "${GT_ENDPOINT:-}"
+      # Botguard signer. Set to "" to disable image OCR (text keeps working).
+      GT_SIGNER_URL: "${GT_SIGNER_URL:-http://bgr:8771}"
+
+    depends_on:
+      - bgr
 
     # The app writes nothing: read-only rootfs + a small /tmp.
     read_only: true
@@ -48,6 +54,51 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 5s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # Windowless Chromium that mints the botguard token. Never exposed publicly:
+  # it is reachable only from gt-api over the compose network.
+  bgr:
+    build:
+      context: .
+      dockerfile: Dockerfile.sidecar
+    image: gt-bgr:1.0
+    container_name: gt-bgr
+    restart: unless-stopped
+
+    # No `ports:` on purpose - internal only.
+
+    environment:
+      # Chromium's UA must look like a normal desktop Chrome; the default
+      # HeadlessChrome UA makes Google answer with the image echo.
+      GT_UA: "${GT_UA:-}"
+
+    read_only: true
+    tmpfs:
+      # Chromium writes its profile here; /dev/shm stays small in containers.
+      - /tmp:rw,noexec,nosuid,size=512m
+    shm_size: "512m"
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:8771/health
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
       retries: 3
 
     logging:

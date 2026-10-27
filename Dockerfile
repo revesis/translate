@@ -15,7 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Stdlib only: no pip install, no lockfile, nothing to build.
-COPY gt_client.py gt_server.py gt.py ./
+COPY gt_client.py gt_server.py gt.py gt_image.py ./
 
 # Numeric UID: the slim image ships no useradd, and nothing needs a passwd entry.
 USER 10001:10001
