@@ -77,12 +77,15 @@ def sniff_mime(data: bytes) -> str:
 class ImageTranslator:
     """OCR + translate an image. One upstream request per image."""
 
-    def __init__(self, timeout: float = 90.0, retries: int = 2, signer_url: str | None = None):
+    def __init__(self, timeout: float = 90.0, retries: int = 2, signer_url: str | None = None,
+                 signer=None):
         self.timeout = timeout
         self.retries = retries
         # Optional botguard sidecar (see bgr_sidecar.py). Without it Google answers
         # with the image echoed back instead of OCR text.
         self.signer_url = signer_url or os.environ.get("GT_SIGNER_URL") or None
+        # In-process signer (bgr_sidecar.LocalSigner). Takes precedence over the URL.
+        self.signer = signer
         self._jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self._jar))
         self._sid: str | None = None
@@ -111,6 +114,13 @@ class ImageTranslator:
 
     def _sign(self, freq: str) -> str | None:
         """Ask the botguard sidecar for the X-Goog-BatchExecute-Bgr value."""
+        if self.signer is not None:
+            out = self.signer.sign(freq)
+            if out.get("sid"):
+                self._sid = out["sid"]
+            if out.get("bl"):
+                self._bl = out["bl"]
+            return out.get("bgr")
         if not self.signer_url:
             return None
         body = json.dumps({"f_req": freq}).encode()

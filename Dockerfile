@@ -1,21 +1,42 @@
-# Google Translate local API -- no browser, no third-party deps.
-# Build:  podman build --format docker -t gt-api:1.0 .     (or: docker build -t gt-api:1.0 .)
+# Google Translate local API, with image OCR.
+#
+# Text translation is pure stdlib HTTP. Image OCR additionally needs a browser:
+# Google only returns the OCR text when the batchexecute call carries a botguard
+# token, and that token can only be minted inside a real browser realm. Chromium
+# therefore runs as a child process of the API itself - one container, no second
+# service, no published port for the browser.
+#
+# Build:  podman build --format docker -t gt-api:1.0 .
 # Run:    docker compose up -d
 FROM python:3.12-slim
 
-# Unbuffered stdout for `docker logs`; no .pyc so a read-only rootfs stays clean.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     HOME=/tmp \
     GT_HOST=0.0.0.0 \
     GT_PORT=8770 \
-    GT_DEFAULT_TL=zh-CN
+    GT_DEFAULT_TL=zh-CN \
+    # in-process signer: chromium as a child process, no HTTP hop
+    GT_BROWSER=/usr/bin/chromium \
+    GT_SIGNER_URL="" \
+    GT_PROFILE_DIR=/tmp/bgr-inproc
+
+# chromium for the botguard realm; fonts so its canvas/font probes look like a
+# desktop; the rest are chromium's runtime deps that slim does not ship.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      chromium \
+      ca-certificates \
+      fonts-liberation \
+      fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+
+# Only the signer needs a third-party package (CDP over websockets).
+RUN pip install --no-cache-dir "websockets>=12,<14"
 
 WORKDIR /app
-
-# Stdlib only: no pip install, no lockfile, nothing to build.
-COPY gt_client.py gt_server.py gt.py gt_image.py ./
+COPY gt_client.py gt_server.py gt.py gt_image.py bgr_sidecar.py ./
 
 # Numeric UID: the slim image ships no useradd, and nothing needs a passwd entry.
 USER 10001:10001

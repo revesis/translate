@@ -88,26 +88,39 @@ OCI output:
 
 ```bash
 podman build --format docker -t gt-api:1.0 .
-podman build --format docker -f Dockerfile.sidecar -t gt-bgr:1.0 .
 podman-compose up -d
 podman inspect gt-api --format '{{.State.Health.Status}}'   # must say healthy
 ```
 
-Two images, two services:
+One image, one service (`~853 MB`, almost all of it chromium):
 
-| image | service | size | what it is |
-| --- | --- | --- | --- |
-| `gt-api:1.0` | `gt-api` | ~124 MB | python:3.12-slim, text API + `/translate/image` |
-| `gt-bgr:1.0` | `bgr` | ~865 MB | debian-slim + chromium, mints the botguard token |
+| image | size | what it is |
+| --- | --- | --- |
+| `gt-api:1.0` | ~124 MB | text only (`GT_BROWSER=0`): python:3.12-slim, no browser |
+| `gt-api:1.0` | ~853 MB | default: adds chromium, image OCR works |
 
-`bgr` publishes **no** ports: `gt-api` reaches it as `http://bgr:8771` over the compose
-network, so the browser is not exposed to anything that can reach the host. Chromium
-needs a writable `HOME` and profile dir even with a read-only rootfs, hence
-`HOME=/tmp` in the image plus a 512 MB `tmpfs` and `shm_size: 512m`. It runs with
-`--no-sandbox` (required in containers) together with `cap_drop: ALL`.
+Chromium is a **child process of the API**, not a second container and not a second
+HTTP hop: `bgr_sidecar.LocalSigner` starts it lazily on the first `/translate/image`
+call, so text-only traffic never pays for it. It needs a writable `HOME` and profile
+dir even with a read-only rootfs, hence `HOME=/tmp` in the image plus a 512 MB
+`tmpfs` and `shm_size: 512m`; it runs `--no-sandbox` (required in containers) with
+`cap_drop: ALL`. Nothing listens on a port: the CDP socket is a loopback port the
+signer picks at random and keeps to itself.
 
-Set `GT_SIGNER_URL=""` to drop image OCR and keep the text API only; text translation
-never touches the sidecar.
+Measured here (single container, warm):
+
+    /translate?q=hello           ~0.5 s
+    /translate/image  (cold)     25.8 s   browser start + build fetch
+    /translate/image  (warm)      5.6 s   OCR text + translation
+
+`GT_BROWSER=0` drops image OCR and keeps the text API; text translation never
+touches the browser. `GT_SIGNER_URL=http://host:8771` points at a *remote* signer
+instead (that is the split deployment, `Dockerfile.sidecar` — still supported for
+running the browser on a different host).
+
+`chrome-headless-shell` is **not** a drop-in replacement: it mints a token of the
+normal length but Google answers with the image echo only. The full chromium binary
+is required. (Tested 156.0.8078.47, with and without `--headless=new`.)
 
 What the compose service pins down:
 
@@ -120,10 +133,10 @@ What the compose service pins down:
 | `HEALTHCHECK` | `python3 -c urllib.../health` | slim image has no curl; `/health` is unauthenticated |
 | `PYTHONDONTWRITEBYTECODE` | `1` | keeps `__pycache__` from breaking a read-only rootfs |
 
-Verified here: both images build, both containers reach `healthy`, real translation
-through the published port, `401` without the bearer token and `200` with it,
-`.env` interpolation into `GT_API_KEY` works, and `/translate/image` returns OCR text
-through `bgr` in ~3.6 s.
+Verified here: image builds, container reaches `healthy`, real translation through the
+published port, `401` without the bearer token and `200` with it, `.env` interpolation
+into `GT_API_KEY` works, and `/translate/image` returns OCR text through the
+in-process browser.
 
 ### Compose gotchas (hit for real)
 
@@ -134,19 +147,12 @@ through `bgr` in ~3.6 s.
 
   ```bash
   podman build --format docker -t gt-api:1.0 .
-  podman build --format docker -f Dockerfile.sidecar -t gt-bgr:1.0 .
   podman-compose up -d
   ```
 
-- Re-running `--build` while the old containers still exist fails with
-  `container name "gt-bgr" is already in use` or a pod-membership error. Run
-  `podman-compose down` (or `podman rm -f gt-api gt-bgr`) first.
-
-- `bgr` has no published port by design. To poke it directly:
-
-  ```bash
-  podman exec gt-bgr curl -s http://127.0.0.1:8771/health
-  ```
+- Re-running `--build` while the old container still exists fails with
+  `container name "gt-api" is already in use` or a pod-membership error. Run
+  `podman-compose down` (or `podman rm -f gt-api`) first.
 
 ## Tests
 

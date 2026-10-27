@@ -87,10 +87,14 @@ class ChromeSession:
         self._loop = asyncio.get_running_loop()
         shutil.rmtree(self.profile_dir, ignore_errors=True)
         os.makedirs(self.profile_dir, exist_ok=True)
-        self.proc = subprocess.Popen(
-            [
-                self.binary,
-                "--headless=new",
+        # chrome-headless-shell is already headless; passing --headless=new makes it
+        # fall back to the old headless mode, which Google fingerprints.
+        headless_shell = "headless-shell" in os.path.basename(self.binary)
+        args = [self.binary]
+        if not headless_shell:
+            args.append("--headless=new")
+        args += [
+                "--no-sandbox",
                 "--no-sandbox",
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
@@ -101,7 +105,9 @@ class ChromeSession:
                 f"--user-agent={self.ua}",
                 "--window-size=1920,1040",
                 "about:blank",
-            ],
+        ]
+        self.proc = subprocess.Popen(
+            args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -295,6 +301,69 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(502, {"error": str(e)[:300]})
         else:
             self._json(404, {"error": "not found"})
+
+
+class LocalSigner:
+    """In-process signer: owns a browser child process and its own event loop.
+
+    Used when the service should not run a second container (or a second HTTP hop).
+    Thread-safe: call .sign() from any thread.
+    """
+
+    def __init__(self, chrome_binary: str | None = None, profile_dir: str = "/tmp/bgr-inproc",
+                 ua: str = DEFAULT_UA, max_age: float = 900.0):
+        self.chrome_binary = pick_chrome(chrome_binary)
+        self.profile_dir = profile_dir
+        self.ua = ua
+        self.max_age = max_age
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._signer: Signer | None = None
+        self._ready = threading.Event()
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="bgr-signer", daemon=True)
+
+    def start(self, timeout: float = 90.0) -> "LocalSigner":
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            raise BuildError("signer did not become ready in time")
+        if self._error:
+            raise BuildError(f"signer failed to start: {self._error}")
+        return self
+
+    def _run(self) -> None:
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            port = _free_port()
+            self._signer = Signer(self.ua, self.chrome_binary, port, self.profile_dir, self.max_age)
+            self._loop.run_until_complete(self._signer.start())
+        except BaseException as e:  # noqa: BLE001
+            self._error = e
+            self._ready.set()
+            return
+        self._ready.set()
+        self._loop.run_forever()
+
+    def sign(self, freq: str, timeout: float = 180.0) -> dict:
+        if not self._signer or not self._loop:
+            raise BuildError("signer is not running")
+        fut = asyncio.run_coroutine_threadsafe(self._signer.sign(freq), self._loop)
+        return fut.result(timeout)
+
+    def stop(self) -> None:
+        if self._loop and self._signer:
+            try:
+                asyncio.run_coroutine_threadsafe(self._signer.stop(), self._loop).result(15)
+            except Exception:  # noqa: BLE001
+                pass
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def pick_chrome(explicit: str | None) -> str:

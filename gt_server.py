@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,8 +55,35 @@ _tr_kwargs: dict = {"proxy": GT_PROXY}
 if GT_ENDPOINT:
     _tr_kwargs["endpoint"] = GT_ENDPOINT
 TR = Translator(**_tr_kwargs)
-# Image OCR needs a botguard signer; point GT_SIGNER_URL at bgr_sidecar.py.
-IMAGE = ImageTranslator(signer_url=os.environ.get("GT_SIGNER_URL") or None)
+class _LazySigner:
+    """Starts the in-process browser signer on first use.
+
+    Text-only deployments never pay the browser start-up cost.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._signer = None
+
+    def sign(self, freq: str) -> dict:
+        if self._signer is None:
+            with self._lock:
+                if self._signer is None:
+                    from bgr_sidecar import LocalSigner
+                    self._signer = LocalSigner(
+                        os.environ.get("GT_BROWSER") or None,
+                        profile_dir=os.environ.get("GT_PROFILE_DIR", "/tmp/bgr-inproc"),
+                    ).start()
+        return self._signer.sign(freq)
+
+
+_signer_url = os.environ.get("GT_SIGNER_URL") or ""
+# GT_BROWSER=0 disables the in-process browser entirely (image OCR then degrades).
+_local_browser = os.environ.get("GT_BROWSER", "auto") != "0"
+IMAGE = ImageTranslator(
+    signer_url=_signer_url or None,
+    signer=_LazySigner() if (not _signer_url and _local_browser) else None,
+)
 
 
 class Handler(BaseHTTPRequestHandler):
