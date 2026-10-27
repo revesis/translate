@@ -42,7 +42,8 @@ gt_client.py   core client: batching, line structure, retry/backoff, throttling
 gt_server.py   local HTTP API (stdlib ThreadingHTTPServer)
 gt.py          CLI (same code path as the API)
 gt_image.py    image OCR + translate (needs bgr_sidecar.py for a trusted token)
-bgr_sidecar.py botguard signing sidecar: headless Chrome mints the batchexecute header
+bgr_sidecar.py botguard signing sidecar: a browser mints the batchexecute header
+docs/botguard-notes.md  reverse-engineering notes: token shapes, VM internals, dead ends
 selftest.py    offline tests against a fake upstream (no network, no Google calls)
 Dockerfile     python:3.12-slim, non-root uid 10001, HEALTHCHECK baked in
 docker-compose.yml  loopback port, read-only rootfs, cap_drop ALL, healthcheck
@@ -65,12 +66,13 @@ python3 bgr_sidecar.py --port 8771 --chrome-port 9501      # needs a chrome bina
 GT_SIGNER_URL=http://127.0.0.1:8771 python3 gt_server.py    # image endpoint enabled
 ```
 
-Without `GT_SIGNER_URL` the endpoint still answers, but Google echoes the image back
+Without a signer the endpoint still answers, but Google echoes the image back
 (`found_text: false`). Two things are mandatory and easy to get wrong: the header value
 must be the wrapped array `[";TOKEN",null,null,214,4,null,null,0,"2"]` (a bare token is
 silently downgraded), and the request must carry Chrome's `sec-ch-ua-*` client hints with
-a matching User-Agent. Cookies are not required. See the skill notes for the full
-investigation (what the VM fingerprints, and why jsdom can never mint a trusted token).
+a matching User-Agent. Cookies are not required. `docs/botguard-notes.md` has the full investigation: both token shapes with byte-level
+structure, the VM object's 54 properties, the encode call stack, nine tested-and-excluded
+hypotheses, and the CDP tooling that produced them.
 
 ## Docker
 
