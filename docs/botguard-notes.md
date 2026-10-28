@@ -820,3 +820,33 @@ Reproduce:
 ```
 python3 research/dump_program.py --fields --same --port 10242 --out /tmp/bg-fields-same
 ```
+
+### Mutating the program, and where the writer anchor still fails
+
+`--fields --mutate N` flips plaintext program byte N just before the second mint (the program
+array is decrypted per read, so flipping the stored byte flips what the reader returns). Two
+attempts at byte 300 produced no difference beyond the usual noise:
+
+```
+tokA/tokB/tokC 812 812 812     diffs vs baseline: 456, 36 (random), 56 (clock)
+tokA/tokB/tokC 871 871 871     (no write log at all - see below)
+```
+
+So either that byte is not consumed by this run (coverage is a fraction of the program, section
+18) or the class of change is invisible at field granularity. A useful version of this
+experiment has to sweep offsets inside the blocks the run actually visits, not a single guess.
+
+The bigger problem it exposed: `--fields` sometimes comes back with a full reader log and an
+empty write log in the same run:
+
+```
+realm states: [.. {wr:0, rd:37789, jy:function} ..]     token 1311 chars
+```
+
+The reader instrumentation fired 37 789 times and a token came out, so fields were written - by
+a writer copy the hunk did not patch. The anchor (the `switch(!(p==<ptr>||p==<cat>))`) matches
+two or three copies per build, and at least one live writer must take a different shape (section
+4 already saw `ax`/`qj` called directly). Until that anchor is found, treat `--fields` as
+"works on some builds": when `wrA` is empty, reload and retry rather than trusting an empty
+diff.
+

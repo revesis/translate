@@ -225,6 +225,7 @@ FIELDS_JS = r"""(async () => {
   const src = %s;
   const fa = %s;
   const fb = %s;
+  const mut = %s;
   try { delete window.ridgeslice; } catch (e) {}
   let evalErr = null;
   try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
@@ -261,11 +262,23 @@ FIELDS_JS = r"""(async () => {
   const tokA = await mint(fa);
   const wrA = collect();
   const tokB = await mint(fb);
+  let tokC = null, wrC = null;
+  if (mut !== null) {
+    window.__mut = mut;
+    tokC = await mint(fb);
+    wrC = collect();
+    window.__mut = null;
+  }
   const wrB = collect();
   let meta = {};
   for (const w of realms) { try { if (!meta.V && w.__vmeta) meta = w.__vmeta; } catch (e) {} }
-  return JSON.stringify({ tokA: tokA.length, tokB: tokB.length, V: meta.V,
-                          nu: (meta.prog || []).length, wrA: wrA, wrB: wrB });
+  const states = realms.map((w) => {
+    try { return { wr: (w.__wr || []).length, rd: (w.__rd || []).length, jy: typeof w.__JY }; }
+    catch (e) { return { err: 1 }; }
+  });
+  return JSON.stringify({ states: states, tokA: tokA.length, tokB: tokB.length,
+                          tokC: tokC === null ? null : tokC.length, V: meta.V,
+                          nu: (meta.prog || []).length, wrA: wrA, wrB: wrB, wrC: wrC });
 })()"""
 
 
@@ -311,7 +324,8 @@ def parse_material(html: str) -> str:
 
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
-              twice: bool = False, fields: bool = False, same: bool = False) -> None:
+              twice: bool = False, fields: bool = False, same: bool = False,
+              mutate: int | None = None) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -333,13 +347,24 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("patch:", {k: v for k, v in info.items() if k != "params"})
         if fields:
-            fb = freq if same else (freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
+            fb = freq if (same or mutate is not None) else (
+                freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
             d = json.loads(await cs.eval(FIELDS_JS % (json.dumps(arr), json.dumps(src),
-                                                      json.dumps(freq), json.dumps(fb))))
-            print({k: v for k, v in d.items() if k not in ("wrA", "wrB")})
+                                                      json.dumps(freq), json.dumps(fb),
+                                                      "null" if mutate is None else str(mutate))))
+            print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
+            print("realm states:", d.get("states"))
             a, b = d.get("wrA") or [], d.get("wrB") or []
             if not a or not b:
                 return
+            c = d.get("wrC")
+            if c is not None:
+                noise = {x[0] for x, y in zip(a, b) if x != y}
+                effect = [(x, z) for x, z in zip(a, c) if x != z and x[0] not in noise]
+                print(f"baseline noise ids (same payload, no mutation): {sorted(noise)}")
+                print(f"mutation-only differences: {len(effect)}")
+                for x, z in effect[:15]:
+                    print("  ", x[0], x[1], str(x[2])[:60], "->", z[1], str(z[2])[:60])
             print(f"field writes: A={len(a)} B={len(b)}")
             differ = [(x, y) for x, y in zip(a, b) if x != y]
             print("positions differing:", len(differ))
@@ -447,6 +472,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--mutate", type=int, default=None,
+                    help="with --fields: flip plaintext program byte N before the second mint")
     ap.add_argument("--same", action="store_true",
                     help="with --fields: use the identical payload twice (isolates per-sign noise)")
     ap.add_argument("--fields", action="store_true",
@@ -457,7 +484,8 @@ def main() -> None:
                     help="mint once naturally then once with the forced sweep (negative control)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same))
+    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same,
+                    a.mutate))
 
 
 if __name__ == "__main__":

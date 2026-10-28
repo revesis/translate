@@ -128,7 +128,11 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                or re.search(r"\)\.(\w+)\)\.length", win))
         fd_name = mfd.group(1) if mfd else ""
         boot_old = seed_call + "(" + b.group(6) + ",[0,0,0])"
-        boot_new = (boot_old + ",window.__vmref=" + seed_vm + ",window.__JY=" + name
+        # optional single-byte mutation of the loaded program, for A/B runs:
+        # `window.__mut = N` flips plaintext byte N (the array is decrypted per read, so
+        # flipping the stored byte flips what the reader returns).
+        boot_new = (boot_old + ",(window.__mut!=null&&(" + seed_vm + "." + prog_field
+                    + "[window.__mut]^=1)),window.__vmref=" + seed_vm + ",window.__JY=" + name
                     + ",window.__vmeta={V:" + seed_vm + "." + vfield + ",prog:" + seed_vm + "."
                     + prog_field + ",seed:" + seed_vm + ".l"
                     + ((",fd:" + seed_vm + "." + fd_name) if fd_name else "") + "}")
@@ -168,18 +172,17 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                 continue
             f, params_w = fn
             val = params_w[2]
+            push = ("[" + fid + ",(" + val + "&&" + val + ".length)|0,(function(x){try{return "
+                    "JSON.stringify(x)}catch(e){return String(x)}})(" + val + ")]")
             inject = ("window.__wr=window.__wr||[],(" + fid + "!==" + id_ptr + "&&" + fid
-                      + "!==" + id_cat + ")&&window.__wr.push([" + fid + ",(" + val + "&&"
-                      + val + ".length)|0,(function(x){try{return JSON.stringify(x)}"
-                      "catch(e){return String(x)}})(" + val + ")]);")
+                      + "!==" + id_cat + ")&&window.__wr.push(" + push + ");")
             if inject in src[f.end():f.end() + 200]:
                 continue
             src = src[:f.end()] + inject + src[f.end():]
             cop += 1
         if not cop:
             raise SystemExit("writer anchor not found")
-        info_writer = {"writers_patched": cop,
-                       "skip_ids": [id_ptr, id_cat]}
+        info_writer = {"writers_patched": cop, "skip_ids": [id_ptr, id_cat]}
 
     info = {"reader": name, "params": params[:3], "bits": bits_name, "flag": flag_name,
             "cache_field": cache_field, "vfield": vfield, "prog_field": prog_field,
