@@ -393,6 +393,28 @@ So the selection rule is: arm a candidate only if its arguments vary across hits
 attempt should arm `cH` first, then test the others against that rule instead of by
 frequency on the stack.
 
+### The reader is readable, and the interpreter is hash-checked
+
+On this build the reader survives un-mangling inside the interpreter string:
+
+```js
+JY=function(b,F,t,...){ if((M=k(t,230),M)>=t.V) throw[PH,31]; ... r=t.NU[u], ...
+R3=function(b){ return b.o?YY(b.D,b):JY(8,true,b) }
+```
+
+`JY(bits, flag, vm)` reads `bits` bits starting at the pointer kept in **field 230** and
+returns the value, so a logger at its entry would give `(count, start bit)` for every read -
+the instruction stream and its operands, with no framing guesswork.
+
+Two things block source instrumentation:
+
+* `arr[2]` is exactly `base64url(sha256(interpreter source))` - verified byte for byte, so
+  it is the interpreter's integrity check. Patching the source means recomputing it.
+* Recomputing `arr[2]` is **not enough**: with the patched interpreter and a matching hash
+  the token collapses to 913 characters and the reader is never entered (0 reads), so a
+  second gate rejects it - most likely the VM loading the interpreter by hash from
+  `https://www.google.com/js/bg/<hash>` rather than using the eval'd copy.
+
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
 handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
