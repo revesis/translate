@@ -347,5 +347,23 @@ repeating ~8 % of the time - several dispatch entries per instruction). Offsets 
 jump between regions (2768 → 35212), so the trace covers several functions.
 
 This gives the instruction stream as `(bit offset, remaining bits)` pairs without
-knowing the encoding in advance. Next: read the bits at those offsets with the reader
-semantics from §9 and correlate the widths with the deltas to recover the opcode layout.
+knowing the encoding in advance.
+
+### First sign of real structure
+
+All offsets are **even**, so the counter is in 2-bit units: the real bit offset is
+`F * 2`. Reading the raw program at those scaled offsets and taking the first 4 bits of
+each instruction gives a stream with an obvious loop in it:
+
+```
+... 4, 10, 12, 4, 3, 4,   4, 4, 10, 12, 4, 3, 4,   4, 4, 10, 12, 4, 3, 4, 4 ...
+```
+
+A repeating period-6 body (`4, 10, 12, 4, 3, 4`) is not something random data produces -
+this is the first evidence that `(offset * 2, 4-bit field)` is the right framing, and
+that the trace is walking a loop. A uniform-distribution check over 4-8 bit windows on
+*unscaled* offsets showed nothing (5-15 % concentration); with the x2 scaling a 4-bit
+field concentrates 44 % on 14 of 16 values.
+
+Next: pin down what follows the 4-bit field (operand widths per opcode, from the offset
+deltas) and map the opcodes to the handlers seen in the stack (`cH` -> `eT` -> `z`/`k`).
