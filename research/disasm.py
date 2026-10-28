@@ -32,7 +32,7 @@ def load(path):
     reads = [(int(e[0]), int(e[2]), int(v[1]) if isinstance(v, list) else int(v))
              for e, v in zip(log, vals)]
     ips = [x for x in (d.get("ip") or []) if isinstance(x, (int, float)) or
-           (isinstance(x, list) and len(x) == 2)]
+           (isinstance(x, list) and len(x) >= 2)]
     # `wr` comes from a write-log run, `wrA` from `--fields` (the first of its two mints)
     writes = [w for w in (d.get("wr") or d.get("wrA") or [])
               if isinstance(w, list) and len(w) >= 4]
@@ -45,7 +45,7 @@ def segment(reads, ips):
     """Chronological mapping of boundaries to read indices, so loops and repeats resolve."""
     bounds, cur, missed = [], 0, 0
     for item in ips:
-        ptr, depth = (item, None) if not isinstance(item, list) else item
+        ptr, depth = (item, None) if not isinstance(item, list) else (item[0], item[1])
         j = cur
         while j < len(reads) and reads[j][1] != ptr:
             j += 1

@@ -1704,3 +1704,38 @@ Reproduce:
 python3 research/run_one.py --port 10292 --out /tmp/bg-fr        # now also patches the accessor
 python3 research/disasm.py /tmp/bg-fr/one.json --dataflow
 ```
+
+## 33. Correction: the stack is not the operand channel (measured, 31 of 1092)
+
+Section 32 guessed that the operands of the "does nothing visible" ops live on an internal stack.
+The loop hunk now logs the stack depth beside each boundary as well - the property name comes from
+the dispatcher's own `c = VM.P.pop()` (only the property is reusable; the local there is a different
+variable at the loop site, and using it would throw at runtime).
+
+One run (pBm, 1092 boundaries):
+
+```
+stack depth histogram: {1: 1061, 2: 31}      range 1..2
+delta between consecutive instructions: {0: 1029, +1: 31, -1: 31}
+```
+
+So the stack is used by **one construct, 31 times in 1092 instructions** - it is not where the
+operands of the frequent producer ops live. The hypothesis in section 32 is wrong and is withdrawn.
+
+What the loop does with a handler's result is visible in the code, and it is the more likely
+channel:
+
+```js
+oz(52, (Y && (e=Y[E4], t-(~e&t)) ? Y(F,J) : nZ(0,[PH,21,G],F,17)), false), false, J, false, F)
+```
+
+- the handler's **return value** is passed straight into `oz(52, ...)` together with the step, i.e.
+  the value channel is the call's return value plus whatever `oz` keeps, not a stack array.
+
+`oz` itself is another flattened multi-purpose function (like most of this interpreter), so the next
+measurement should be cheaper than reading it: log the *return value* of each handler call the same
+way the handler string is logged (`String(value).slice(0,...)` for primitives, `typeof` otherwise),
+which requires one more injection at the same site and answers "what does op 430 produce" directly.
+
+Standing summary of what is measured per instruction: handler source, program values read, fields
+read, fields written, stack depth. Missing: the value the handler returned.

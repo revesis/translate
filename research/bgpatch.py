@@ -392,10 +392,19 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # take it from the `if(!VM.X){VM.COUNTER++;` prologue of the loop-containing function
         mdep = re.search(r"if\(!(\w+)\.\w+\)\{(\w+)\.(\w+)\+\+;", src)
         dep = (mdep.group(2) + "." + mdep.group(3)) if mdep else "null"
-        inject = (",(" + vm_l + ".__ip=" + vm_l + ".__ip||[]).push([" + lv + "," + dep + "])")
+        # the dispatcher pops operands from an internal stack (`c = L.P.pop()` in tY), so the
+        # stack name is taken from that pop and logged per boundary: an instruction that "does
+        # nothing visible" usually consumes operands there
+        # only the property name is reusable: the local in `c = L.P.pop()` is a different
+        # variable at the loop site, the instance is the one the loop already holds
+        msp = re.search(r"=(\w+)\.(\w+)\.pop\(\)", src)
+        sp = msp.group(2) if msp else None
+        spd = ("(" + vm_l + "." + sp + "||[]).length") if sp else "-1"
+        inject = (",(" + vm_l + ".__ip=" + vm_l + ".__ip||[]).push([" + lv + "," + dep + ","
+                  + spd + "])")
         src = src[:m.end()] + inject + src[m.end():]
         info_loop = {"loop_sites": len(hits), "loop": m.group(0), "ip_log": vm_l + ".__ip",
-                     "inner_text": in_string(src, m.start())}
+                     "inner_text": in_string(src, m.start()), "stack": sp}
     else:
         info_loop = {}
 
