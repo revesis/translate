@@ -117,7 +117,7 @@ def find_name(s: str, upto: int, vm: str):
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
           writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
-          loop=False):
+          loop=False, handlers=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -399,6 +399,38 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     else:
         info_loop = {}
 
+    if handlers:
+        # A handler slot is drained once the run has used it (section 26), so a post-mint walk of
+        # `vm.h` only ever sees `create,concat`. The loop holds the handler in a local right after
+        # looking it up, so record `String(handler)` once per op id from there. The shape of that
+        # expression differs per build, so try the known ones in order:
+        #   Fhxs  Y=z((G=B(F,(ZS(21,F,P),37)),G),F)
+        #   pBm   I=(b=f(78,(e(71,q,R),q)),T(q,b))
+        #   EON   z=B(V,(C=Z(V,43,P),37)),...
+        shapes = [
+            (r"(\w+)=(\w+)\(\((\w+)=(\w+)\((\w+),\("
+             r"(\w+)\((\d+),\5,(\w+)\),(\d+)\)\),\3\),\w+\)", 1, 3, 5),
+            (r"(\w+)=\((\w+)=(\w+)\((\d+),\((\w+)\((\d+),(\w+),(\w+)\),"
+             r"\w+\)\),(\w+)\((\w+),\2\)\)", 1, 2, 7),
+            (r"(\w+)=(\w+)\((\w+),\((\w+)=(\w+)\((\w+),\((\w+)\((\w+),(\d+),(\w+)\),"
+             r"(\d+)\)\),\4\)\)", 1, 4, 3),
+        ]
+        info_handlers = {}
+        for pat, gi_dst, gi_op, gi_vm in shapes:
+            m = re.search(pat, src)
+            if not m:
+                continue
+            dst, op, vmh = m.group(gi_dst), m.group(gi_op), m.group(gi_vm)
+            inject = (";(" + vmh + ".__hn=" + vmh + ".__hn||{})[" + op + "]===void 0&&("
+                      + vmh + ".__hn[" + op + "]=String(" + dst + ").slice(0,400))")
+            src = src[:m.end()] + inject + src[m.end():]
+            info_handlers = {"handler_expr": m.group(0), "op": op, "handler": dst}
+            break
+        else:
+            info_handlers = {"handler_expr": None}
+    else:
+        info_handlers = {}
+
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
     # indistinguishable from "nothing to log".
@@ -411,5 +443,6 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     info.update(info_canary)
     info.update(info_kinds)
     info.update(info_loop)
+    info.update(info_handlers)
     info.update(info_post)
     return src, info

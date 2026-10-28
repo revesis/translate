@@ -101,6 +101,7 @@ JS = r"""(async () => {
                           nblocks: blocks.length, blocks: blocks,
                           sweep: st.dump, sweepErr: String(found.__sweepErr || ''),
                           ip: (found.__vmref && found.__vmref.__ip) || [],
+                          hn: (found.__vmref && found.__vmref.__hn) || {},
                           tab: (function () {
                             // one row per field-table slot: the id, its own keys, and what the
                             // `prototype`/`value` members hold - an instruction's opcode is the id
@@ -585,7 +586,7 @@ def parse_material(html: str) -> str:
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
               twice: bool = False, fields: bool = False, same: bool = False,
               mutate: int | None = None, writers: bool = False, early: bool = False,
-              loop: bool = False, frame_scripts: bool = False) -> None:
+              loop: bool = False, frame_scripts: bool = False, handlers: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -619,7 +620,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, killswitch=True)
         else:
             src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab or fields),
-                                      sweep=sweep or ab, writes=fields, loop=loop)
+                                      sweep=sweep or ab, writes=fields, loop=loop,
+                                      handlers=handlers)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         cs.body = src.encode()
         print("patch:", {k: v for k, v in info.items() if k != "params"})
@@ -832,6 +834,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             for v in tab.values():
                 ptypes[v[2] if len(v) > 2 else "?"] = ptypes.get(v[2] if len(v) > 2 else "?", 0) + 1
             print(f"field table: {len(tab)} ids, prototype types {ptypes}")
+            hn = d.get("hn") or {}
+            print(f"handlers captured at dispatch: {len(hn)}")
             for v in rows[:3]:
                 print("   sample", v)
             print(f"log-only: reads={len(reads)} (malformed {len(raw) - len(reads)})"
@@ -884,6 +888,8 @@ def main() -> None:
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
     ap.add_argument("--frame-scripts", action="store_true",
                     help="mint with the pristine interpreter and dump every compiled script")
+    ap.add_argument("--handlers", action="store_true",
+                    help="with --loop: capture String(handler) once per dispatched op id")
     ap.add_argument("--loop", action="store_true",
                     help="log the instruction-loop pointer, i.e. one entry per executed instruction")
     ap.add_argument("--early", action="store_true",
@@ -903,7 +909,7 @@ def main() -> None:
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same,
-                    a.mutate, a.writers, a.early, a.loop, a.frame_scripts))
+                    a.mutate, a.writers, a.early, a.loop, a.frame_scripts, a.handlers))
 
 
 if __name__ == "__main__":

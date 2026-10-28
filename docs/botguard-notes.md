@@ -1419,3 +1419,82 @@ Two ways in, in order of cost: (a) join the *field reads* to the instruction (a 
 field X leaves a `z(X, vm)` trail, which shows up as the field id among the tokens), or (b) capture
 a live handler - a breakpoint on the loop that dumps `String(Y)` once per handler id, since the
 slot is drained after the mint and a post-mortem walk only ever sees `create,concat`.
+
+## 28. What a leading token actually selects: a slot value, function or data
+
+Section 27 called the leading token a "handler id" because the loop does `Y = z(op, vm)` and then
+calls `Y(F, J)`. Capturing `String(Y)` at dispatch (new `--handlers` hunk) shows that the slot
+holds *either* a function *or* plain data, so the stream is a serialized computation over the
+field table, not a uniform opcode stream.
+
+Instrument: the loop's dispatch expression differs per build, so three shapes are matched in turn -
+
+```
+Fhxs  Y=z((G=B(F,(ZS(21,F,P),37)),G),F)
+pBm   I=(b=f(78,(e(71,q,R),q)),T(q,b))
+EON   z=B(V,(C=Z(V,(E(V,328,J),17)),C))
+```
+
+- and the first time an op id is seen, `String(handler).slice(0,400)` is stored on the instance
+(`vm.__hn`), which survives the drain because it is a string copy taken *during* the run.
+
+One run (pBm build, 1958 instructions, 30744 reads, 100 % of the program's blocks touched,
+127 distinct op ids dispatched):
+
+```
+47  function(...)              real operations
+37  numeric literal / array    constants (e.g. op 6 = twelve 32-bit words)
+ 9  array literal              constants
+28  other                      strings, DOM objects, native method references
+ 6  empty                      slot already drained when captured
+```
+
+Samples that make the shape concrete:
+
+```
+op  1  function(E,q,L,Z,I,l){... l^I ... (q==1?Z<<L:Z>>>L) ...}      arithmetic on a 3-slot frame
+op  5  function(D,k,H,M,p,g){p=(H=(g=f(13,(k=f(20,D),D)),M=f(27,J),x(k,D)),x(g,D)),e(M,D,+(H==p))}
+                                                                    compare two field values, write bool
+op  7  function(D,k,H,M,p){... FP(G,M,function(g){return eval(g)}(AF(N(D.W,H)))) ...}
+                                                                    eval of a computed string
+op 24  function(E,q,L,...){(q.push((I=E[0]<<24|E[1]<<16|E[2]<<8|E[3])...   32-bit packing
+op  6  1718972003,1953066862,1160540460,1277975084,...              a constant table
+op 17  "style"      op 29  "<<"      op 35  "slice"
+op 34  function replace() { [native code] }
+op 10  [object Window]      op 13  [object HTMLBodyElement]
+```
+
+So the program is a table of *slots* whose values are the operations, the constants, and the
+captured environment objects the run needs - which is exactly what section 20's field table showed
+from the other side (fields carrying strings, property lists, DOM references).
+
+This also explains why the per-op effect table of section 27 looked heterogeneous: an op that
+selects a *constant* writes nothing, and an op that selects a function may write a field named by
+one of its operands. The (arity, target-position) measurements stand; only the word "opcode" was
+wrong.
+
+### Instruments, final state for this line of work
+
+```
+research/bgpatch.py        role-based patcher; hunks: entry, ret, boot, blockcache, sweep, writes,
+                           killswitch, canary, post, kinds, loop, handlers
+                           (order matters: loop and handlers run last, they insert mid-text)
+research/dump_program.py   one page load, same build pair, raw material saved per load;
+                           --log-only --loop [--handlers] is the trace mode,
+                           --fields for the write table, --frame-scripts for the debugger dump
+research/read_records.py   tokenise a read log, print the token range behind each write
+research/disasm.py         instruction table (handler, arity, target position) + disassembly
+```
+
+Reproduce the table:
+
+```
+python3 research/dump_program.py --log-only --loop --handlers --port 10286 --out /tmp/bg-h
+python3 research/disasm.py /tmp/bg-h/run_log.json --table
+```
+
+Next: the 47 functions are the instruction set in source form; the next useful artefact is a
+per-build map `op id -> (kind, arity, operands, target)` in a machine-readable file, built by
+joining the three logs, so that a later session can compare two builds by *shape* and see which
+operations are stable (arithmetic, compare, eval, 32-bit packing) and which are environment
+probes that change with the page.
