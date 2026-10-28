@@ -382,6 +382,15 @@ Every width is a multiple of 4, so the layout is `4-bit opcode + fixed-size oper
 (op 12 carries 80 operand bits = 10 bytes, op 10 carries 48 bits = 6 bytes). The very
 large widths in the table above are the region jumps, not instructions.
 
+Practical limit: pause-based tracing is slow. Each `Debugger.pause`/`resume` round trip
+costs a millisecond or two, and `Runtime.evaluate` has a 120 s ceiling, so a 3000-hit
+trace at 4 ms intervals times out. Keep traces in the few-hundred-hit range, or drive the
+sampler from `Debugger.setBreakpoint` hits (no pause requests) instead of polling.
+
+Also: a 400-hit trace is dominated by one loop - the same instruction offsets repeat
+(op 12 at bit 132636 nine times, identical operands). Widen coverage before drawing
+conclusions about the instruction set.
+
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
 handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
