@@ -311,7 +311,7 @@ def parse_material(html: str) -> str:
 
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
-              twice: bool = False, fields: bool = False) -> None:
+              twice: bool = False, fields: bool = False, same: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -333,7 +333,7 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("patch:", {k: v for k, v in info.items() if k != "params"})
         if fields:
-            fb = freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B"
+            fb = freq if same else (freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
             d = json.loads(await cs.eval(FIELDS_JS % (json.dumps(arr), json.dumps(src),
                                                       json.dumps(freq), json.dumps(fb))))
             print({k: v for k, v in d.items() if k not in ("wrA", "wrB")})
@@ -447,6 +447,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--same", action="store_true",
+                    help="with --fields: use the identical payload twice (isolates per-sign noise)")
     ap.add_argument("--fields", action="store_true",
                     help="two mints with different payloads; log and diff every field write")
     ap.add_argument("--twice", action="store_true",
@@ -455,7 +457,7 @@ def main() -> None:
                     help="mint once naturally then once with the forced sweep (negative control)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields))
+    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same))
 
 
 if __name__ == "__main__":

@@ -789,3 +789,34 @@ python3 research/dump_program.py --fields --port 10240 --out /tmp/bg-fields
 Next: turn the write log into the token layout - write order plus sizes against the 1100-byte
 token, then check the three per-sign fields against the bytes that move between two mints of the
 same payload.
+
+### Same payload twice: three random fields and a clock
+
+Same tool, `--fields --same` (both mints get the identical payload):
+
+```
+writes 700 / 700, tokens 896 / 896
+differing positions: 4
+  473  4B  [40,27,34,165]   | [93,184,23,108]
+  474  4B  [56,225,40,39]   | [68,93,236,101]
+  277  4B  [224,86,249,246] | [98,160,204,84]
+   10  0B  1793164558231    | 1793164559103     <- clock, ms
+```
+
+With the payload varying the same four moved plus field 201, so the decomposition is exact:
+
+| class | fields | behaviour |
+| --- | --- | --- |
+| fixed skeleton | the other ~133 ids | byte-identical in every run of the same build |
+| per-sign randomness | 473, 474, 277 | four fresh bytes each, independent of the payload |
+| clock | 86 in one build, 10 in the next | ms since epoch, so the id rotates with the build |
+| content | 201 | carries the payload string |
+
+That is what "generate the signature for an arbitrary input" reduces to: reproduce the skeleton,
+fill three random 4-byte fields, stamp the clock, put the payload in 201, and run the serializer.
+
+Reproduce:
+
+```
+python3 research/dump_program.py --fields --same --port 10242 --out /tmp/bg-fields-same
+```
