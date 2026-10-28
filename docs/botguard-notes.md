@@ -1820,3 +1820,65 @@ R.push(R.s8[-~(a&7)+(a^7)+(~a^7)]^u)        // pBm: same idea, table name and in
 so the detector has to generalise to `X.push(X.TABLE[<any index>]^byte)` and then find the enclosing
 function's field-id parameter. That is a ten-minute change, but it has to be verified on a build
 that actually ships it, which is why it is recorded here rather than guessed at.
+
+## 36. The token field, filled: 17 emits, 780 bytes, target id is the last token
+
+The emit hook (section 35) finally ran on a build whose emitters it can see (Fhxs). Two runs, one
+before and one after adding the read counter to the log:
+
+```
+run A (no read counter)   18 emits   696 bytes   fields {146: 683, 444: 2, 134: 7, 473: 4}
+run B (with read counter) 17 emits   780 bytes   fields {146: 773, 444: 2,  89: 1, 473: 4}
+```
+
+The emission sequence for field 146 in run A, which is the token field of section 2b:
+
+```
+  #  len  first                            #  len  first
+  1    1    208                            8    2      0
+  2    2      0                            9   64      1
+  3    6     11                           14    1      1
+  4    1     95                           15    1      7
+  5    4    106                           17   11      0
+  6    4      9                           18  585      2      <- the bulk
+  7    1     38
+```
+
+Run B attributes each emit to an instruction (the log carries the read count, so the same window
+rule as writes applies) and the shape is immediately readable - **the target field id is the last
+token of the instruction**:
+
+```
+field 146 len   1  <- tokens [163,  82, 146]
+field 146 len   2  <- tokens [490,  11, 146]
+field 146 len   6  <- tokens [490,  11, 146]
+field 146 len   1  <- tokens [163,  57, 146]
+field 146 len   4  <- tokens [460,  52, 146]
+field 146 len  64  <- tokens [490,   9, 146]
+field 444 len   1  <- tokens [163,  94, 444]
+field 473 len   4  <- tokens [263,  50, 473]
+```
+
+So the emitter call reads its field id from the program (last token), and the *length* is not an
+operand: `[490, 11, 146]` emits 2 bytes in one call and 6 in another, and `[490, 9, 146]` emits 2 and
+64 - the byte count comes from the value being appended.
+
+Two consequences worth keeping:
+
+* **the last five emissions have no instruction window.** They land after the loop's final boundary,
+  i.e. in the serializer phase (`DS.eV` / `o3` of section 3), including the final 585/675-byte write.
+  So the token is assembled in two phases: incremental chunks during the program run, one bulk write
+  at encode time - which is why section 2b saw "2 + 1059" as the last `concat`.
+* **the small chunk sizes match section 2b exactly** (1, 2, 4, 6, 11, 64 ...): those are the
+  length-prefixed per-field headers seen from the inside.
+
+Still unhooked: the pBm/EON emitters (different keystream table name and an obfuscated index, section
+35). The analytical fallback now works without them - for those builds, "last token of the
+instruction is the emit target" can be checked against the write log directly.
+
+Reproduce:
+
+```
+python3 research/run_one.py --port 10322 --out /tmp/bg-em      # needs a Fhxs load for emit events
+python3 research/disasm.py /tmp/bg-em/one.json --emit-log
+```

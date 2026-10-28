@@ -514,7 +514,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             data_arg = next((x for x in ps[:4] if x not in (vm_arg, fid_arg)), ps[1])
             inject = ("(" + vm_arg + ".__em=" + vm_arg + ".__em||[]).push([" + fid_arg + ",("
                       + data_arg + "&&" + data_arg + ".length)|0,(" + data_arg
-                      + "&&" + data_arg + "[0])|0]);")
+                      + "&&" + data_arg + "[0])|0,(" + vm_arg + ".__rv||[]).length]);")
             if src[m.end():m.end() + 1] == "{":
                 # inside the loop/if body: `while(vm.C==vm){(log); ...original }`
                 at = m.end() + 1

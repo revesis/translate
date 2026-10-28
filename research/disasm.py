@@ -90,6 +90,8 @@ def main() -> None:
     ap.add_argument("--instr", help="slice of instructions, e.g. 0:40")
     ap.add_argument("--limit", type=int, default=16, help="tokens per instruction when dumping")
     ap.add_argument("--emit", help="write a machine-readable map (op -> kind/arity/target)")
+    ap.add_argument("--emit-log", action="store_true",
+                    help="the byte-emission sequence (field, length, first byte) and its total")
     ap.add_argument("--dataflow", action="store_true",
                     help="per op: the fields it reads (inputs) and writes (outputs)")
     a = ap.parse_args()
@@ -125,6 +127,38 @@ def main() -> None:
         t = " ".join(str(v) for v in x["tokens"][:a.limit])
         extra = "" if len(x["tokens"]) <= a.limit else f" ...(+{len(x['tokens']) - a.limit})"
         print(f"  [{t}{extra}]  writes {w}")
+
+    if a.emit_log:
+        em = [e for e in (d.get("em") or []) if isinstance(e, list) and len(e) >= 3]
+        if not em:
+            print("no emission events in this run (the emitter hook did not match this build)")
+        else:
+            total = 0
+            per = collections.Counter()
+            print("  #  field   len   first   cumulative")
+            for i, e in enumerate(em, 1):
+                total += int(e[1])
+                per[int(e[0])] += int(e[1])
+                print(f"  {i:2d} {int(e[0]):6d} {int(e[1]):5d} {int(e[2]):7d} {total:10d}")
+            print(f"total {total} bytes into fields {dict(per)}")
+            if len(em[0]) >= 4:
+                # with read counts the emission can be attributed to an instruction, and the
+                # tokens read just before it are the bytes it wrote (length prefix included)
+                print("  emission -> instruction (tokens immediately before the call):")
+                for e in em:
+                    cnt = int(e[3])
+                    k = None
+                    for idx, (i, depth) in enumerate(bounds):
+                        j = bounds[idx + 1][0] if idx + 1 < len(bounds) else len(reads)
+                        if i < cnt <= j:
+                            k = idx
+                            break
+                    if k is None:
+                        continue
+                    i, _d = bounds[k]
+                    t = tokens(reads[i:cnt])
+                    print(f"    field {int(e[0]):4d} len {int(e[1]):4d}"
+                          f"  <- {len(t)} tokens {t[:8]}{' ...' if len(t) > 8 else ''}")
 
     if a.dataflow:
         # The dispatch lookup itself is a field read of the op id, and the bit pointer is read on
