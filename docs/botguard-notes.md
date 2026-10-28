@@ -266,3 +266,47 @@ not natives). Full chromium is required.
    change that flips the shape. Whatever it detects lives below the JS-visible surface
    (V8 context metadata is the standing hypothesis; §4 rows 6 and 9 rule out the
    obvious ways to observe it).
+
+---
+
+## 9. The bytecode (`NU`) - offline access and the key
+
+Two facts that make the decompiler work possible without a browser:
+
+**1. The program is recoverable offline.** `arr[0]` in the `mnsUbf` material is
+`"Boau" + base64(bytecode) + 45 chars of tail`. The exact slice was confirmed against a
+live VM instance (`inst.NU`, 22353 bytes) byte for byte:
+
+```python
+raw  = arr[0]                      # 29852 chars
+b64  = raw[3:3 + 29804]            # 29804 chars -> 22353 bytes
+nu   = base64.b64decode(b64)       # == inst.NU
+```
+
+**2. The obfuscation key is per-build, not per-signature.** The interpreter reads the
+bytecode through a bit reader that XORs every byte with an 8-byte table `hq`:
+
+```js
+n = g % 8; u = g >> 3; r = t.NU[u]; r ^= t.hq[u & 7];   // g = bit offset
+```
+
+`hq` was identical in two independent runs on the same build
+(`47 132 201 191 76 4 130 25`), so the stream can be decrypted offline. The reader is
+MSB-first: take bit `(byte >> (7 - (bit & 7))) & 1`, with the byte XORed first.
+
+```python
+nu  = base64.b64decode(arr[0][3:3+29804])
+hq  = [47, 132, 201, 191, 76, 4, 130, 25]
+dec = bytes(b ^ hq[i & 7] for i, b in enumerate(nu))   # 22353 bytes
+```
+
+The result is **not** readable text and not byte-aligned instructions: it is a
+bit-packed stream (byte-wise XOR alone yields no structure, and neither 3-bit nor
+5-bit framing looks like an opcode stream). So the instruction encoding still has to be
+recovered - that is the actual decompiler work.
+
+Next step: log what the reader *returns* during a real run instead of guessing the
+framing. The readers are `JY`, `B`, `a`, `R3` in the interpreter; wrapping them in the
+frame realm (trust does not matter for this - it is data collection) gives the executed
+instruction stream directly, and the state machine's dispatch (`D` / `ZS`, which write
+`this.h[field]`) can then be mapped opcode by opcode.
