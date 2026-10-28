@@ -305,6 +305,16 @@ bit-packed stream (byte-wise XOR alone yields no structure, and neither 3-bit no
 5-bit framing looks like an opcode stream). So the instruction encoding still has to be
 recovered - that is the actual decompiler work.
 
+### What the array hooks can and cannot see
+
+`Array.prototype.push` / `concat` wrappers stay trust-neutral (token 1423) and reveal
+the *field sizes* (§2b), but they cannot reveal field *contents*: every array they
+capture is a pre-allocated, uniform buffer (2276 zeros, etc.). The interpreter writes
+bytes by index assignment - `L[G++] = e` in its UTF-8 encoder, the same pattern in the
+field writers - so the byte stream never passes through an array method that JS can
+intercept. Reaching it would need a Proxy on an array created inside the closure, which
+is not obtainable.
+
 Next step: log what the reader *returns* during a real run instead of guessing the
 framing. The readers are `JY`, `B`, `a`, `R3` in the interpreter; wrapping them in the
 frame realm (trust does not matter for this - it is data collection) gives the executed
