@@ -594,9 +594,6 @@ if you do not print the error. All patching has to happen in the *first* eval of
 
 ## 16. Recovering the program: read each block when its keystream is fresh
 
-The count is per run and per build; artifact `program_blocks.bin` for the second row above came
-out with `sha256 587dfec56bc071ec…` (prefix) and is not committed - it is per-build data.
-
 The reader XORs every byte with an 8-byte table that is regenerated whenever the bit pointer
 enters a new 64-bit block:
 
@@ -698,10 +695,11 @@ reads=20174  blocks touched=2201/2778 (79.2 %)   token 1224 chars
 ```
 
 So at 64-bit-block granularity a single degraded-length run visits about four fifths of the
-program; the 57.6 % figure in section 11 was measured in *bits* placed by the log, which is
-a stricter and less useful number. The remaining fifth is where section 16's per-block read
-earns its keep - with block capture the same instrumented build ends up walking all blocks,
-because the forced reads push the pointer to block boundaries and the program follows.
+program with the real payload; the 57.6 % figure in section 11 was measured in *bits* placed
+by the log, which is a stricter and less useful number. That block coverage is what section
+16's per-block read multiplies by eight: it cannot hand back the fifth a run never enters -
+only a perturbed run walks every block (section 16's 100 % rows), and a perturbed run is not
+the run you wanted to measure.
 
 ## 19. What the recovered program looks like
 
