@@ -269,7 +269,7 @@ not natives). Full chromium is required.
 
 ---
 
-## 9. The bytecode (`NU`) - offline access and the key
+## 9. The bytecode (`NU`) - offline access, and why the "key" is not one
 
 Two facts that make the decompiler work possible without a browser:
 
@@ -415,7 +415,7 @@ Two things block source instrumentation:
   second gate rejects it - most likely the VM loading the interpreter by hash from
   `https://www.google.com/js/bg/<hash>` rather than using the eval'd copy.
 
-### 11. Instrumenting the reader (breakthrough)
+## 11. Instrumenting the reader (breakthrough)
 
 The interpreter string can be patched: `arr[2]` only has to equal
 `base64url(sha256(source))`, so recompute it and the instrumented build is accepted. The
@@ -457,7 +457,7 @@ bands are simply not read on this path, they must be pulled on demand by another
 7.75 for the ciphertext, and short runs like `divprotectcache_y` come out readable, so the
 placement is right where it covers.
 
-### 12. Field writer and the origin of the keystream seed
+## 12. Field writer and the origin of the keystream seed
 
 `D(fieldId, vm, value)` is the only writer, and it is readable:
 
@@ -486,7 +486,7 @@ That also explains the read gaps: fields are created lazily by `R` and only pull
 program when dereferenced (`z` -> `.value` -> `w` -> `.create()`), so the two skipped bands
 are read by that lazy path rather than by `JY` during the initial sweep.
 
-### 13. Keystream capture does not give offline decryption (negative result)
+## 13. Keystream capture does not give offline decryption (negative result)
 
 The keystream is observable: logging `L.hq` right after it is regenerated gives eight bytes
 per block, with a constant per-load seed (`t.i = -1154219265` in one run) and
