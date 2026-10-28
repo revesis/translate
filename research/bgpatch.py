@@ -61,7 +61,7 @@ def find_name(s: str, upto: int, vm: str):
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
-          writes=False, killswitch=False, sink=None, canary=False):
+          writes=False, killswitch=False, sink=None, canary=False, post=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -218,6 +218,25 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     else:
         info_canary = {}
 
+    if post:
+        # The realm that does the work is a frame the page cannot read, so hand the state over
+        # with postMessage (works cross-origin) right before the token is returned by the
+        # base64url encoder. Quote-free: targetOrigin '*' is built with fromCharCode.
+        i = src.find("window.btoa")
+        if i < 0:
+            raise SystemExit("btoa site not found")
+        j = src.find("break a}", i)
+        if j < 0:
+            raise SystemExit("btoa block end not found")
+        post_code = (";try{window.parent.postMessage(JSON.stringify({rd:window.__rd||[],"
+                     "rv:window.__rv||[],wr:window.__wr||[],prog:window.__prog||{},"
+                     "vmeta:window.__vmeta||{},booted:window.__booted||0}),"
+                     "String.fromCharCode(42))}catch(q){}")
+        src = src[:j] + post_code + src[j:]
+        info_post = {"post": True}
+    else:
+        info_post = {}
+
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
     # indistinguishable from "nothing to log".
@@ -228,4 +247,5 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             "seed_field": seed_id, "seed_call": seed_call}
     info.update(info_writer)
     info.update(info_canary)
+    info.update(info_post)
     return src, info

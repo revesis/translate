@@ -207,6 +207,18 @@ TWICE_JS = r"""(async () => {
   };
   const collect = () => {
     walk(window);
+    // prefer the state the frame pushed out (it may be gone by now)
+    if ((window.__MSGS || []).length) {
+      const last = window.__MSGS[window.__MSGS.length - 1];
+      try {
+        const o = JSON.parse(last);
+        const rd = o.rd || [], wr = o.wr || [];
+        if (rd.length || wr.length) {
+          window.__MSGS = [];
+          return { rd: rd, wr: wr };
+        }
+      } catch (e) {}
+    }
     for (const w of realms) {
       try { if (w.__prog && Object.keys(w.__prog).length) return w; } catch (e) {}
     }
@@ -267,6 +279,18 @@ FIELDS_JS = r"""(async () => {
   };
   const collect = () => {
     walk(window);
+    // prefer the state the frame pushed out (it may be gone by now)
+    if ((window.__MSGS || []).length) {
+      const last = window.__MSGS[window.__MSGS.length - 1];
+      try {
+        const o = JSON.parse(last);
+        const rd = o.rd || [], wr = o.wr || [];
+        if (rd.length || wr.length) {
+          window.__MSGS = [];
+          return { rd: rd, wr: wr };
+        }
+      } catch (e) {}
+    }
     let best = null;
     for (const w of realms) {
       try {
@@ -280,8 +304,11 @@ FIELDS_JS = r"""(async () => {
   };
   collect();
   const tokA = await mint(fa);
-  const wrA = collect();
+  const gotA = collect();
+  const wrA = Array.isArray(gotA) ? gotA : (gotA.wr || []);
   const tokB = await mint(fb);
+  const gotB = collect();
+  const wrB = Array.isArray(gotB) ? gotB : (gotB.wr || []);
   let tokC = null, wrC = null;
   if (mut !== null) {
     window.__mut = mut;
@@ -289,7 +316,6 @@ FIELDS_JS = r"""(async () => {
     wrC = collect();
     window.__mut = null;
   }
-  const wrB = collect();
   let meta = {};
   for (const w of realms) { try { if (!meta.V && w.__vmeta) meta = w.__vmeta; } catch (e) {} }
   const vmDiag = {};
@@ -297,6 +323,7 @@ FIELDS_JS = r"""(async () => {
     vmDiag.booted = VM.__booted || window.__booted || 0;
     vmDiag.entry = window.__REntry || 0;
     vmDiag.comp = (window.__comp || []).slice(0, 6);
+    vmDiag.msgs = (window.__MSGS || []).length;
     vmDiag.evs = (window.__evs || []).slice(0, 6);
     vmDiag.topRd = (window.__rd || []).length;
     vmDiag.topWr = (window.__wr || []).length;
@@ -499,7 +526,7 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                     script_id = None
                 orig = arr[2]
                 src, info = bgpatch.patch(arr[5][-1], blockcache=False, writes=True,
-                                          sink=TOP_SINK, canary=True)
+                                          canary=True, post=True)
                 print(f"attempt {attempt + 1}: injected patched interpreter for build "
                       f"{orig[:16]}, reloading")
                 # Clear the name first (the page's own bootguard may have claimed it) and keep
@@ -508,12 +535,16 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 injected = ("try{window.ridgeslice=void 0}catch(e){};" + src
                             + ";window.__MINE=1;window.__MINEV=window.ridgeslice;"
                             "window.__aCalls=0;window.__aVals=0;window.__comp=[];window.__evs=[];"
+                            "window.__MSGS=[];window.addEventListener(String.fromCharCode(109,"
+                            "101,115,115,97,103,101),function(e){window.__MSGS.push(e.data);});"
                             "(function(){var F=window.Function;window.Function=function(){"
                             "try{var a=arguments[arguments.length-1];var t=String(a);"
                             "window.__comp.push([t.length,t.indexOf('__MINE'),t.slice(0,40)]);}"
                             "catch(e){}return F.apply(this,arguments);};})();"
                             "(function(){var e=window.eval;window.eval=function(x){"
-                            "try{var t=String(x);window.__evs.push([t.length,t.indexOf('__MINE'),t.slice(0,40)]);}"
+                            "try{var t=String(x);window.__evs.push([t.length,t.indexOf('__MINE'),t.slice(0,40)]);"
+                            "window.parent.postMessage(JSON.stringify({e:t.length,m:t.indexOf('__MINE'),"
+                            "h:t.slice(0,60)}),String.fromCharCode(42));}"
                             "catch(q){}return e.call(window,x);};})();"
                             "(function(){var v=window.__MINEV;if(!v||typeof v.a!==125)try{}catch(e){} })();"
                             "(function(){var v=window.__MINEV;if(v&&typeof v.a==='function'){var o=v.a;"
