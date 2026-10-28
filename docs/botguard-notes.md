@@ -415,6 +415,44 @@ Two things block source instrumentation:
   second gate rejects it - most likely the VM loading the interpreter by hash from
   `https://www.google.com/js/bg/<hash>` rather than using the eval'd copy.
 
+### 11. Instrumenting the reader (breakthrough)
+
+The interpreter string can be patched: `arr[2]` only has to equal
+`base64url(sha256(source))`, so recompute it and the instrumented build is accepted. The
+VM bootstraps inside an **iframe**, so the log lives on the iframe's `window`, not the top
+one - read it through `document.querySelectorAll('iframe')[0].contentWindow`.
+
+The reader, complete:
+
+```js
+JY=function(b,F,t,...){
+  if((M=k(t,230),M)>=t.V) throw[PH,31];
+  for(q=(E=(J=0,b),g=M,t.FD.length); E>0;)
+    n=g%8, u=g>>3, c=8-(n|0), r=t.NU[u], P=c<E?c:E,
+    F&&(G=g, L=t, L.R!=G>>6 && (L.R=G>>6, Y=w(L,15),
+         L.hq=WH(16,L.R,L.i,[0,0,Y[1],Y[2]],551)), r^=t.hq[u&q]),
+    g+=P, J|=(r>>8-(n|0)-(P|0)&(1<<P)-1)<<(E|0)-(P|0), E-=P;
+  return D(230,(e=J,t),(M|0)+(b|0)), e }
+```
+
+Facts that follow:
+
+* `NU` is **XOR-encrypted at rest**, keystream regenerated per 64-bit block
+  (`L.R = G>>6`) from the per-load seed `t.i` via `WH(16, blockIndex, t.i, [0,0,Y[1],Y[2]], 551)`.
+  That is why `hq` differs between loads - it is not a build constant at all.
+* `F` is the decrypt flag; every read in a real signing run had it set.
+* The reader walks the program with a **bit** pointer (field 230), and reads cross byte
+  boundaries (a 2-bit read at bit 40 followed by an 8-bit read at bit 42).
+
+Logging at the reader's return gives plaintext. A full signing run produces **13482
+reads** (12666 x 8 bits, 812 x 2 bits, 4 x 32 bits) covering **100 %** of the program
+(178832 of 178824 bits), all with `F = 1`.
+
+Reassembly note: placing the returned values back into a bit buffer by position covers
+103034 of 178824 bits and drops the entropy from 7.75 to 4.88 bits/byte, so the placement
+is on the right track but not yet exact - the overlapping 2-bit reads need the masked
+(not the whole) value, and one 32-bit read at the end returns null.
+
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
 handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
