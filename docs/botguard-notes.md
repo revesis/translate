@@ -1590,3 +1590,58 @@ So the decompiler's unit is (handler source, the values it read, the field it wr
 now measured per instruction, and the remaining work is transcribing the 47 handler functions per
 build into operations. What must not be inferred from the token stream alone is a fixed operand
 layout: there is none, because the handler is the parser.
+
+## 31. First annotated ops: what the written value is compared to what was read
+
+Method: for instructions with exactly one write, compare the written value with the tokens the
+handler itself read in that instruction (section 30). Three outcomes are possible and each is
+informative - the value equals a token (a literal store), the value is unrelated to the tokens (a
+computed store), or the instruction writes nothing at all (a value producer).
+
+One EON run (906 instructions, 518 writes) annotated this way:
+
+```
+op   n   arity  shape                    written value            reading
+ 34  28       3  [34, T, V]               == V, 28/28              STORE_IMM: field[T] = V
+133   4     169  [133, T, a, b, ...]      == tokens[3:], 4/4       STORE_ARRAY: field[T] = the 165-byte
+                                                                   array that follows (the header's
+                                                                   ASCII table, "divprotectcache_...")
+288 129   5/7/8  [288, a, T, ...]         clock (e.g. 1793192953745) or an object     computed store:
+                                                                   the run's ms clock goes to field T
+ 73 124       3  [73, T, a]               "0," / 4-byte / 2-byte   computed store, size varies
+ 48  73       3  [48, a, T]               a 73-byte function source string             computed store
+ 37  54       3  [37, a, T]               (function / opaque)       computed store
+ 96  22       4  [96, a, b, T]            [object Window] / [object HTMLDocument]
+                                                                    STORE_DOM_REF: a captured DOM
+                                                                    object lands in field T
+ 90   4       4  [90, T, a, b]            851 / 2048 / 28573        computed store of a small int
+ 87  13       6  [87, T, a, b, c, d]      133120 / 343635057 / -2073085794
+                                                                    computed 32-bit store
+ 68  22       3  [68, 63, T]              opaque, size 3/5/7       computed store
+--  ---      --  ------------------------ ------------------------ ---------------------------
+ 34,133,288,73,48,37,96,90,87,68 cover 447 of 906 instructions (49 %)
+```
+
+and the value producers, which never write:
+
+```
+op   n  arity   role
+104 121   4/5/6  reads a few values (largest single group in the program)
+418  58   2      [418, x] one operand
+412  58   4      [412, a, b, T]-shaped but writes nothing
+ 18  48   4/5    [18, a, b, c]
+```
+
+Two concrete facts worth carrying forward:
+
+* **the clock is a program instruction, not a header field.** Field 74/54 (per build) receives
+  `Date.now()` from op 288 during the run, which is the "clock" of section 20 seen from the
+  instruction side.
+* **the ASCII table at the start of the program is stored by one instruction.** Op 133 consumes the
+  whole table and writes it as one 165-element array; that is why the first boundary looked like a
+  169-token record (section 29) - it is a single bulk store, not a merged segment.
+
+Caveat, unchanged: every id above is per build (the store-immediate op is 34 here, and the same
+shape appeared as 32 on another build). The *shapes* - `[op, T, V]` immediate, `[op, T, ...]`
+computed, `[op, a, b, T]` with the target last, `[op, a, T, ...]` with the target in the middle -
+are what transfer.
