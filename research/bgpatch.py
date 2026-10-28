@@ -117,7 +117,7 @@ def find_name(s: str, upto: int, vm: str):
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
           writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
-          loop=False, handlers=False):
+          loop=False, handlers=False, fieldread=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -399,37 +399,75 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     else:
         info_loop = {}
 
+    # The loop's dispatch expression, per build. Each entry: pattern, then the group indices for
+    # (dst = the handler value, op id, vm) and for the accessor call that fetched the slot, plus
+    # whether that accessor takes the field id first or second. Shapes, not names - every name and
+    # every id in these expressions rotates per build (sections 15/27).
+    DISPATCH_SHAPES = [
+        # Fhxs: Y=z((G=B(F,(ZS(21,F,P),37)),G),F)         accessor z(id, vm)
+        (r"(\w+)=(\w+)\(\((\w+)=(\w+)\((\w+),\("
+         r"(\w+)\((\d+),\5,(\w+)\),(\d+)\)\),\3\),\w+\)", 1, 3, 5, 2, 1),
+        # pBm:  I=(b=f(78,(e(71,q,R),q)),T(q,b))          accessor T(vm, id)
+        (r"(\w+)=\((\w+)=(\w+)\((\d+),\((\w+)\((\d+),(\w+),(\w+)\),\w+\)\),"
+         r"(\w+)\((\w+),\2\)\)", 1, 2, 7, 9, 2),
+        # EON:  z=B(V,(C=Z(V,(E(V,328,J),17)),C))         accessor B(vm, id)
+        (r"(\w+)=(\w+)\((\w+),\((\w+)=(\w+)\((\w+),\((\w+)\((\w+),(\d+),(\w+)\),"
+         r"(\d+)\)\),\4\)\)", 1, 4, 3, 2, 2),
+    ]
+
+    def find_dispatch(source: str):
+        for pat, g_dst, g_op, g_vm, g_acc, idpos in DISPATCH_SHAPES:
+            m = re.search(pat, source)
+            if m:
+                return m, m.group(g_dst), m.group(g_op), m.group(g_vm), m.group(g_acc), idpos
+        return None, None, None, None, None, None
+
+    if handlers or fieldread:
+        m, dst, op, vmsel, acc, idpos = find_dispatch(src)
+    else:
+        m = None
+
     if handlers:
         # A handler slot is drained once the run has used it (section 26), so a post-mint walk of
-        # `vm.h` only ever sees `create,concat`. The loop holds the handler in a local right after
-        # looking it up, so record `String(handler)` once per op id from there. The shape of that
-        # expression differs per build, so try the known ones in order:
-        #   Fhxs  Y=z((G=B(F,(ZS(21,F,P),37)),G),F)
-        #   pBm   I=(b=f(78,(e(71,q,R),q)),T(q,b))
-        #   EON   z=B(V,(C=Z(V,43,P),37)),...
-        shapes = [
-            (r"(\w+)=(\w+)\(\((\w+)=(\w+)\((\w+),\("
-             r"(\w+)\((\d+),\5,(\w+)\),(\d+)\)\),\3\),\w+\)", 1, 3, 5),
-            (r"(\w+)=\((\w+)=(\w+)\((\d+),\((\w+)\((\d+),(\w+),(\w+)\),"
-             r"\w+\)\),(\w+)\((\w+),\2\)\)", 1, 2, 7),
-            (r"(\w+)=(\w+)\((\w+),\((\w+)=(\w+)\((\w+),\((\w+)\((\w+),(\d+),(\w+)\),"
-             r"(\d+)\)\),\4\)\)", 1, 4, 3),
-        ]
+        # `vm.h` only sees `create,concat`. Record `String(handler)` once per op id, from the loop.
         info_handlers = {}
-        for pat, gi_dst, gi_op, gi_vm in shapes:
-            m = re.search(pat, src)
-            if not m:
-                continue
-            dst, op, vmh = m.group(gi_dst), m.group(gi_op), m.group(gi_vm)
-            inject = (";(" + vmh + ".__hn=" + vmh + ".__hn||{})[" + op + "]===void 0&&("
-                      + vmh + ".__hn[" + op + "]=String(" + dst + ").slice(0,400))")
+        if m:
+            inject = (";(" + vmsel + ".__hn=" + vmsel + ".__hn||{})[" + op + "]===void 0&&("
+                      + vmsel + ".__hn[" + op + "]=String(" + dst + ").slice(0,400))")
             src = src[:m.end()] + inject + src[m.end():]
             info_handlers = {"handler_expr": m.group(0), "op": op, "handler": dst}
-            break
         else:
             info_handlers = {"handler_expr": None}
     else:
         info_handlers = {}
+
+    if fieldread:
+        # Which *fields* an instruction touched is invisible in the read log (that only covers the
+        # program stream), but every field access goes through the accessor the loop uses for the
+        # op slot, so logging its (id, readsCompleted) pairs attributes field reads the same way
+        # writes are attributed.
+        info_fr = {}
+        if acc:
+            # names are reused inside one build (EON defines `B` three times), so pick the
+            # definition that actually indexes a field table: `{t = vm.TABLE[id]`
+            m_def = None
+            for cand in re.finditer(r"\b" + re.escape(acc) + r"=function\(([^)]*)\)\{", src):
+                if re.search(r"=\w+\.\w+\[", src[cand.end():cand.end() + 120]):
+                    m_def = cand
+            if m_def:
+                ps = [x.strip() for x in m_def.group(1).split(",")]
+                if len(ps) >= 2:
+                    fid_arg, vm_arg = (ps[0], ps[1]) if idpos == 1 else (ps[1], ps[0])
+                    inject = ("(" + vm_arg + ".__fr=" + vm_arg + ".__fr||[]).push([" + fid_arg + ",("
+                              + vm_arg + ".__rv||[]).length]);")
+                    src = src[:m_def.end()] + inject + src[m_def.end():]
+                    info_fr = {"accessor": acc, "idpos": idpos, "id_arg": fid_arg, "patched": True}
+                else:
+                    info_fr = {"accessor": acc, "patched": False}
+        else:
+            info_fr = {"accessor": None}
+    else:
+        info_fr = {}
 
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
@@ -444,5 +482,6 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     info.update(info_kinds)
     info.update(info_loop)
     info.update(info_handlers)
+    info.update({"fieldread": info_fr} if info_fr else {})
     info.update(info_post)
     return src, info

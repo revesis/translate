@@ -1645,3 +1645,62 @@ Caveat, unchanged: every id above is per build (the store-immediate op is 34 her
 shape appeared as 32 on another build). The *shapes* - `[op, T, V]` immediate, `[op, T, ...]`
 computed, `[op, a, b, T]` with the target last, `[op, a, T, ...]` with the target in the middle -
 are what transfer.
+
+## 32. Field reads per instruction: the operands are mostly on a stack, not in fields
+
+The read log only covers the program stream, so "which fields does this instruction touch" needed a
+fourth instrument: patch the field accessor (the same function the loop uses to fetch the op slot)
+to log `[fieldId, readsCompletedWhenRead]`, then attribute by the same window rule as writes.
+
+The accessor is not a stable name and its id argument moves, so both are taken from the dispatch
+expression matched for the handler capture (section 28). Measured on all three builds:
+
+```
+Fhxs  accessor z(id, vm)   EON  accessor B(vm, id)   pBm  accessor T(vm, id)
+```
+
+- EON needed one extra guard: it defines `B` three times in one build, so the definition is picked
+  by "its body indexes a field table" (`=vm.TABLE[id]`), not by being the last definition.
+
+One run (pBm, 921 instructions, 441 writes, 11451 field reads, all depths 1) with the op-id read
+and the bit pointer filtered out (the pointer, field 44 here, is touched by nearly every
+instruction):
+
+```
+op     n   inputs (fields read)            outputs (fields written)
+   299  144  []                              []
+    13  125  [(27, 31), (339, 1)]            [(111, 59), (124, 32), (15, 31)]
+   467  117  []                              [(27, 45), (79, 28), (16, 3)]
+   430   73  []                              []
+   200   67  []                              [(124, 30), (50, 12)]
+    53   59  []                              []
+    18   29  [(266, 1), (366, 1), (375, 1)]  [(27, 18), (124, 2)]
+   264   23  [(118, 3), (84, 2), (27, 2)]    []
+   425    5  [(366, 3), (447, 2)]            []
+```
+
+Reading it:
+
+* **most instructions touch no field at all** - neither read nor write. Combined with section 30
+  (the handler gets only `(vm, step)`), that means the operand flow is an implicit stack: the
+  handlers call the reader for program values, push results, and a few of them pop and store. The
+  stack is the missing half of the dataflow, and it is a VM-internal array (`J.P`-shaped in the
+  dispatcher `tY`, which does `c = L.P.pop()`).
+* **the one op with a clear content role is 13**: 125 executions, reads field 27, writes 111 (59x),
+  124 (32x) and **field 15 (31x)** - 15 is the seed field of section 12, so this is where the
+  per-sign seed is generated and stored - the same event section 20 saw as "field 15 written twice".
+* fields 366 and 266 are read by the rare ops (425, 337, 441, 18) - 366 is the field the reader's
+  own dispatch writes (`T(this,366)` appeared in the EON boot), i.e. a bookkeeping slot.
+
+So the decompiler now has, per instruction: the handler source, the program values it read, the
+fields it read, and the fields it wrote. What it does not have is the stack, and the measurements
+above say that is where most of the operands live. Next instrument, then: log the stack depth (and
+the top few values) beside each boundary, which turns "op 430 does nothing visible" into
+"op 430 consumes two values".
+
+Reproduce:
+
+```
+python3 research/run_one.py --port 10292 --out /tmp/bg-fr        # now also patches the accessor
+python3 research/disasm.py /tmp/bg-fr/one.json --dataflow
+```

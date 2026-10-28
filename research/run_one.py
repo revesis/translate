@@ -50,7 +50,8 @@ JS = r"""(async () => {
   for (const w of realms) { try { if (!vm && w.__vmref) vm = w.__vmref; } catch (e) {} }
   if (!vm) return JSON.stringify({stage: 'no vm', tok: tok.length});
   return JSON.stringify({tok: tok.length, ip: vm.__ip || [], rd: vm.__rd || [], rv: vm.__rv || [],
-                         wr: vm.__wr || [], hn: vm.__hn || {}, V: vm.V || vm.U || vm.j || null});
+                         wr: vm.__wr || [], hn: vm.__hn || {}, fr: vm.__fr || [],
+                         V: vm.V || vm.U || vm.j || null});
 })()"""
 
 
@@ -74,7 +75,8 @@ async def run(port: int, out: str) -> None:
         tag = str(arr[2])[:16]
         os.makedirs(out, exist_ok=True)
         open(os.path.join(out, "interp_" + tag + ".js"), "w").write(plain)
-        src, info = bgpatch.patch(plain, blockcache=False, writes=True, loop=True, handlers=True)
+        src, info = bgpatch.patch(plain, blockcache=False, writes=True, loop=True, handlers=True,
+                                  fieldread=True)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("build", tag, {k: v for k, v in info.items() if k not in ("params", "wrappers")})
         d = json.loads(await cs.eval(JS % (json.dumps(arr), json.dumps(src), json.dumps(freq))))

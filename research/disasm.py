@@ -36,7 +36,9 @@ def load(path):
     # `wr` comes from a write-log run, `wrA` from `--fields` (the first of its two mints)
     writes = [w for w in (d.get("wr") or d.get("wrA") or [])
               if isinstance(w, list) and len(w) >= 4]
-    return d, reads, ips, writes
+    # field reads: [fieldId, readsCompletedWhenRead], from the patched field accessor
+    freads = [f for f in (d.get("fr") or []) if isinstance(f, list) and len(f) == 2]
+    return d, reads, ips, writes, freads
 
 
 def segment(reads, ips):
@@ -68,14 +70,15 @@ def tokens(seg):
     return out
 
 
-def instructions(reads, bounds, writes):
+def instructions(reads, bounds, writes, freads=None):
     out = []
     for k, (i, depth) in enumerate(bounds):
         j = bounds[k + 1][0] if k + 1 < len(bounds) else len(reads)
         t = tokens(reads[i:j])
         eff = [int(w[0]) for w in writes if i < int(w[3]) <= j]
+        fin = [int(f[0]) for f in (freads or []) if i < int(f[1]) <= j]
         if t:
-            out.append({"tokens": t, "written": eff, "depth": depth})
+            out.append({"tokens": t, "written": eff, "inputs": fin, "depth": depth})
     return out
 
 
@@ -87,11 +90,13 @@ def main() -> None:
     ap.add_argument("--instr", help="slice of instructions, e.g. 0:40")
     ap.add_argument("--limit", type=int, default=16, help="tokens per instruction when dumping")
     ap.add_argument("--emit", help="write a machine-readable map (op -> kind/arity/target)")
+    ap.add_argument("--dataflow", action="store_true",
+                    help="per op: the fields it reads (inputs) and writes (outputs)")
     a = ap.parse_args()
 
-    d, reads, ips, writes = load(a.path)
+    d, reads, ips, writes, freads = load(a.path)
     bounds, missed = segment(reads, ips)
-    ins = instructions(reads, bounds, writes)
+    ins = instructions(reads, bounds, writes, freads)
     depths = collections.Counter(x["depth"] for x in ins)
     print(f"reads {len(reads)}  boundaries {len(ips)} (unmapped {missed})  "
           f"instructions {len(ins)}  writes {len(writes)}  depths {dict(depths)}")
@@ -120,6 +125,32 @@ def main() -> None:
         t = " ".join(str(v) for v in x["tokens"][:a.limit])
         extra = "" if len(x["tokens"]) <= a.limit else f" ...(+{len(x['tokens']) - a.limit})"
         print(f"  [{t}{extra}]  writes {w}")
+
+    if a.dataflow:
+        # The dispatch lookup itself is a field read of the op id, and the bit pointer is read on
+        # every program read, so both are filtered: the op id by identity, the pointer because it
+        # is the one field touched by nearly every instruction.
+        cnt = collections.Counter()
+        for x in ins:
+            for f in set(x["inputs"]):
+                cnt[f] += 1
+        ptr = cnt.most_common(1)[0][0] if cnt else None
+        print(f"field reads {len(freads)}  pointer field (filtered) {ptr}")
+        prof = collections.defaultdict(lambda: {"n": 0, "in": collections.Counter(),
+                                                "out": collections.Counter()})
+        for x in ins:
+            t = x["tokens"]
+            p = prof[t[0]]
+            p["n"] += 1
+            for f in set(x["inputs"]):
+                if f != t[0] and f != ptr:
+                    p["in"][f] += 1
+            for f in set(x["written"]):
+                p["out"][f] += 1
+        print("op     n   inputs (fields read)            outputs (fields written)")
+        for op in sorted(prof, key=lambda o: -prof[o]["n"])[:20]:
+            p = prof[op]
+            print(f"  {op:4d} {p['n']:4d}   {p['in'].most_common(3)!s:32s} {p['out'].most_common(3)}")
 
     if a.emit:
         hn = {int(k): v for k, v in (d.get("hn") or {}).items()}
