@@ -1882,3 +1882,19 @@ Reproduce:
 python3 research/run_one.py --port 10322 --out /tmp/bg-em      # needs a Fhxs load for emit events
 python3 research/disasm.py /tmp/bg-em/one.json --emit-log
 ```
+
+### The emit log accounts for the token's size exactly (measured twice)
+
+Token length is `";" + base64url(bytes)`, so the byte count is `len/4*3 + (0 if len%4==0 else len%4-1)`.
+Against the emissions into field 146:
+
+```
+run A   token 923 chars = 692 bytes   emits into 146 = 683   difference +9
+run B   token 1043 chars = 782 bytes  emits into 146 = 773   difference +9
+```
+
+Both runs: `token_bytes == emits_into_146 + 9`. The nine bytes are the constant head of section 1
+(the 5-byte preamble built by `AY(2)` with `C[1] = C[0] ^ 30`, then part of the 8-byte marker), which
+is written outside the hooked emitters. Total emissions (including the other fields) do **not** match
+the token size (`-4` and `+2`), which is a useful discriminator: only field 146's stream reaches the
+token.
