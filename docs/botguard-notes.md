@@ -391,6 +391,23 @@ Also: a 400-hit trace is dominated by one loop - the same instruction offsets re
 (op 12 at bit 132636 nine times, identical operands). Widen coverage before drawing
 conclusions about the instruction set.
 
+### Coverage limit of one breakpoint
+
+Tracing with the `cH` breakpoint armed for a whole mint yields only ~770 dispatch events,
+not the ~3700 a 22353-byte program would need at ~6 bytes per instruction. So `cH` is one
+of several dispatch entry points - `eT`, `T6`, `tY`, `z` and `k` also appear on the stacks
+(the sampler saw 83/61/41/28/14 frames respectively). Within the window `cH` does cover,
+the trace is a 6-instruction loop repeated 27 times:
+
+```
+op 4 (52 bits)  op 4 (68)  op 4 (136)  op 4 (52)  op 10 (52)  op 12 (84)
+```
+
+An attempt to arm all six entry points from a single pause produced zero hits - the
+breakpoints have to be armed from a stack where each of them actually appears, which is
+rare for a single sample. Next: collect several sampled stacks, arm each entry point as it
+shows up, then merge the traces.
+
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
 handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
