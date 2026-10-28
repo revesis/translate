@@ -1553,3 +1553,40 @@ writes and in what order, but not how the value is computed. The 47 functions ca
 28 are the computation, in source form, one per op - so the remaining work is to read those
 functions (they are plain, if flattened, JavaScript) and pair each with the operands its arity
 implies. That is a per-build transcription task now, not a discovery task.
+
+## 30. Mechanism: the handler reads its own operands, the loop only picks it
+
+Update to how sections 27-29 should be read. The loop does
+
+```js
+if((P=z(PTR,vm),P)>=V)break;
+Y = z((G = B(vm,(ZS(CAT,vm,P),KIND)), G), vm);   // fetch op id, look up its slot value
+... Y && Y(HANDLER_MARK) ? Y(vm, step) : throw;   // call it with exactly TWO arguments
+```
+
+so a handler receives `(vm, step)` and nothing else. Everything that looks like an "operand" in the
+token stream is a value the handler itself pulled out of the program during its own execution:
+
+```
+op 48   function(N,Q,h,t,P){q(N,(Q=(t=(P=K(N,20),Z(F,20)),B(S,P)),h=l(D,t),t),h+Q)}
+        tokens [48, 61, 118]  ->  writes field 118
+```
+
+Two program values are read inside that call (the reads log shows exactly two), and the field that
+ends up written is one of those two values - so the target id is *read*, not encoded in a laid-out
+instruction. That is why section 27's arity is not constant per op: it counts the reads a handler
+made, and handlers loop over data-dependent lengths.
+
+Tiny handlers confirm the calling convention by having no parameters at all and working purely off
+closure state:
+
+```
+op 34   function(){K(0,40,c,1)}       tokens [34, 102, 208], [34, 51, 16]   -> writes 1 field
+op 90   function(){K(0,41,x,2)}       tokens [90, 207, 3, 83]              -> writes 1 field
+op 149  function(N,Q,h){(h=Z(N,(Q=K(c,3),13)),q)(Y,h,""+l(N,Q))}
+```
+
+So the decompiler's unit is (handler source, the values it read, the field it wrote) - all three are
+now measured per instruction, and the remaining work is transcribing the 47 handler functions per
+build into operations. What must not be inferred from the token stream alone is a fixed operand
+layout: there is none, because the handler is the parser.
