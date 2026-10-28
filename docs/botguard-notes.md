@@ -1773,3 +1773,50 @@ That is the remaining measurement for the serializer: hook `ax`/`qj` (both shape
 recognisable, the same way the field writer was) and log `(fieldId, data length, first bytes)`. It
 turns "the program wrote field 146" into "field 146 received these bytes in this order", which is
 one step short of the token itself.
+
+## 35. The emit hook: implemented for one shape, and the two ways it can silently break a run
+
+Section 34 named the next step: hook the byte emitters. That is implemented (`emit=True`, wired into
+`research/run_one.py`), and the way it had to be done is worth recording because both traps change
+VM behaviour without any error:
+
+**trap 1 - inserting before the body brace.** The emitters are `while(vm.C==vm){...}` (qj) and
+`if(vm.C==vm)for(...)` (ax). Appending text at the end of the matched condition produces
+
+```js
+while(b.C==b)(b.__em=...).push([...]);{for(...)}      // WRONG: the loop now repeats the log
+if(t.C==t)(t.__em=...).push([...]);for(...)           // WRONG: the for now runs unconditionally
+```
+
+so the log has to go *inside* the block (`while(...){(log);...}`), and where there is no block it
+has to be folded into the condition instead:
+
+```js
+if(((t.__em=t.__em||[]).push([b,len,first]),t.C==t))for(...)   // correct, condition preserved
+```
+
+**trap 2 - stale offsets, again.** Two emitters in one source, so the match list must be walked in
+reverse (each injection shifts the offsets of the ones behind it). This is the third time this class
+of bug has appeared in this file (sections 26, 35): any hunk that inserts text must either run last
+or process its matches back to front.
+
+Shape detected on the Fhxs build (both verified to still produce a normal token by `node --check`
+plus the injected-code review):
+
+```
+qj(vm, data, fieldId)   while(vm.C==vm){ log(fieldId, data.length, data[0]); ... }
+ax(fieldId, data, vm)   if((log(...), vm.C==vm)) for(...)
+      logged: [fieldId, data.length, data[0]]
+```
+
+**not yet exercised live**: four page loads after wiring it up all served the pBm or EON builds, and
+those emitters are shaped differently - the keystream table is called `s8` and the index expression
+is obfuscated, e.g.
+
+```js
+R.push(R.s8[-~(a&7)+(a^7)+(~a^7)]^u)        // pBm: same idea, table name and index differ
+```
+
+so the detector has to generalise to `X.push(X.TABLE[<any index>]^byte)` and then find the enclosing
+function's field-id parameter. That is a ten-minute change, but it has to be verified on a build
+that actually ships it, which is why it is recorded here rather than guessed at.

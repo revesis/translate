@@ -117,7 +117,7 @@ def find_name(s: str, upto: int, vm: str):
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
           writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
-          loop=False, handlers=False, fieldread=False):
+          loop=False, handlers=False, fieldread=False, emit=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -489,6 +489,49 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     else:
         info_fr = {}
 
+    if emit:
+        # The byte emitters are the only functions that XOR the per-field keystream while appending
+        # (`e.push(e.Tu[i&7]^byte)`), and they come in two argument orders:
+        #   ax(fieldId, data, vm)   body: if(vm.C==vm) ... w(vm, fieldId)
+        #   qj(vm, data, fieldId)   body: while(vm.C==vm) ... z(fieldId, vm)
+        # Logging (fieldId, data length, first byte) per call shows the token being assembled.
+        info_emit = {"sites": []}
+        cands = list(re.finditer(r"(\w+)=function\(([^)]*)\)\{(?:if|while)\(\w+\.C==\w+\)", src))
+        # reverse order: each injection shifts the text, and these offsets are from the pre-patch string
+        for m in reversed(cands):
+            ps = [x.strip() for x in m.group(2).split(",")]
+            if len(ps) < 3:
+                continue
+            mvm = re.search(r"(?:if|while)\((\w+)\.C==", m.group(0))
+            vm_arg = mvm.group(1) if mvm else ps[0]
+            body = src[m.end():m.end() + 140]
+            macc = re.search(r"(?:w|z)\((\w+),(\w+)\)", body)
+            if macc:
+                a1, a2 = macc.group(1), macc.group(2)
+                fid_arg = a2 if a1 == vm_arg else a1
+            else:
+                fid_arg = next((x for x in ps[:3] if x != vm_arg), ps[0])
+            data_arg = next((x for x in ps[:4] if x not in (vm_arg, fid_arg)), ps[1])
+            inject = ("(" + vm_arg + ".__em=" + vm_arg + ".__em||[]).push([" + fid_arg + ",("
+                      + data_arg + "&&" + data_arg + ".length)|0,(" + data_arg
+                      + "&&" + data_arg + "[0])|0]);")
+            if src[m.end():m.end() + 1] == "{":
+                # inside the loop/if body: `while(vm.C==vm){(log); ...original }`
+                at = m.end() + 1
+                src = src[:at] + inject + src[at:]
+            else:
+                # no braces (`if(vm.C==vm)for(...)`): fold the log into the condition instead of
+                # inserting before the body, which would change what the loop iterates over
+                mcond = re.search(r"\(\w+\.C==\w+\)$", m.group(0))
+                cond = mcond.group(0)[1:-1]
+                at = m.start() + m.group(0).rindex(cond)
+                src = (src[:at] + "(" + inject.rstrip(";") + "," + cond + ")"
+                       + src[at + len(cond):])
+            info_emit["sites"].append({"fn": m.group(1), "params": ps[:4], "vm": vm_arg,
+                                       "field": fid_arg, "data": data_arg})
+    else:
+        info_emit = {}
+
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
     # indistinguishable from "nothing to log".
@@ -502,6 +545,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     info.update(info_kinds)
     info.update(info_loop)
     info.update(info_handlers)
+    info.update(info_emit)
     info.update({"fieldread": info_fr} if info_fr else {})
     info.update(info_post)
     return src, info
