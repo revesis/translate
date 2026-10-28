@@ -1898,3 +1898,54 @@ Both runs: `token_bytes == emits_into_146 + 9`. The nine bytes are the constant 
 is written outside the hooked emitters. Total emissions (including the other fields) do **not** match
 the token size (`-4` and `+2`), which is a useful discriminator: only field 146's stream reaches the
 token.
+
+## 37. Byte level: the token is a chain of length-prefixed chunks, and field values appear verbatim
+
+The emit hook now logs the first 16 payload bytes of small chunks as well. One run (Fhxs, token 869
+chars) shows the whole structure of the field-146 stream:
+
+```
+field 146 len   1   [208]
+field 146 len   2   [0, 6]
+field 146 len   6   [11, 119, 101, 235, 43, 119]
+field 146 len   1   [95]
+field 146 len   4   [149, 46, 128, 215]
+field 146 len   4   [155, 38, 82, 92]
+field 146 len   1   [38]
+field 146 len   2   [0, 64]
+field 146 len  64   (larger than 16, only the length is logged)
+field 444 len   1   [104]        field 444 len 1 [144]
+field 146 len   1   [1]          field 146 len 1 [7]
+field 473 len   4   [0, 2, 104, 144]
+field 146 len  11   [0, 9, 247, 110, 217, 227, 72, 63, 116, 220, 19]
+field 146 len 545   (the bulk)
+```
+
+Three things are readable directly:
+
+* **every chunk carries its own length prefix.** `[0, 9, ...]` is nine payload bytes, `[0, 2, ...]`
+  is two. That is the "nonce(2) + field(n)" pattern of section 2b seen from inside the field.
+* **field values appear verbatim.** The write log has field 473 = `[247, 110, 217, 227]`, and the
+  next emission into 146 is `[0, 9, 247, 110, 217, 227, ...]` - the same four bytes, unencrypted,
+  followed by five more. So at this point the stream is plaintext field data, and the encryption of
+  section 34 (`e.Tu[i&7]^c`) is applied only on the paths that target 277/473/474 (the emitter has
+  exactly that `b==277||b==474||b==473` branch).
+* **the emission that fills 473 is itself `[0, 2, 104, 144]`** - prefix plus two bytes, i.e. the
+  field's own stream is built the same way as the token's.
+
+Size accounting over three runs (`token_bytes` = `len/4*3` of the base64url part, i.e. after
+dropping the leading `;`):
+
+```
+run A  token 923 chars -> 692 bytes   emits(146) 683   difference 9
+run B  token 1043 chars -> 782 bytes  emits(146) 773   difference 9
+run C  token 869 chars -> 651 bytes   emits(146) 643   difference 8
+```
+
+So `token_bytes = emits(146) + head` with head = 8..9 bytes. That head is the nonce and the marker
+of section 1 (`C = AY(2).concat(field146)`, `C[1] = C[0]^30`), and its last byte moves with the
+length encoding - which is the one thing here that is *not* pinned down yet.
+
+This is as far as the emission side can be pushed without decoding the handler that composes each
+chunk. What it already gives the serializer work: the exact chunk order and the per-chunk byte
+counts for one run, plus the invariant that only field 146's stream reaches the token.
