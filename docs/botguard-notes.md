@@ -99,6 +99,39 @@ has to be intercepted **while it is generated**, which means hooking the writer
 functions (`ax`, `qj` in the inline build) or wrapping each slot's `create` between
 instance creation and serialization.
 
+### 2b. Field sizes, measured by instrumenting the writers
+
+`Array.prototype.push` and `Array.prototype.concat` can be wrapped in the frame realm
+via CDP **without losing trust** (token stays 1405–1447), which makes the writer
+pipeline observable. Every `concat` the serializer performs is `nonce(2) + field(n)`,
+so the call list is a field-size profile for the run:
+
+```
+trusted (5 calls)   2+2=4?   no: this=99 + [2] -> 101
+                    2 + 64   = 66
+                    2 + 71   = 73
+                    2 + 881  = 883
+                    2 + 1059 = 1061      <- final field146, becomes the token
+
+degraded (9 calls)  99 + 2   = 101
+                    2 + 542  = 544   (three identical calls)
+                    2 + 542  = 544
+                    2 + 542  = 544
+                    2 + 365  = 367
+                    2 + 19   = 21
+                    2 + 26   = 28
+                    2 + 2052 = 2054
+                    2 + 2112 = 2114      <- final token
+```
+
+The degraded run does not drop fields - it writes **more of them** (9 vs 5), including
+three byte-identical 542-byte blocks. That matches the byte-level observation in §1
+(~1050 extra bytes of high-entropy payload).
+
+Array sizes alone identify the *output* buffers reliably (1074 B trusted vs 2052 B
+degraded, matching the token sizes), but not the field ids: the id is an argument of
+the writer (`ax`/`qj`), not of `concat`. Mapping sizes to ids is the next step.
+
 ## 3. Where the encode happens
 
 Call stack at the `btoa` call, captured inside the frame realm:
