@@ -448,10 +448,17 @@ Logging at the reader's return gives plaintext. A full signing run produces **13
 reads** (12666 x 8 bits, 812 x 2 bits, 4 x 32 bits) covering **100 %** of the program
 (178832 of 178824 bits), all with `F = 1`.
 
-Reassembly note: placing the returned values back into a bit buffer by position covers
-103034 of 178824 bits and drops the entropy from 7.75 to 4.88 bits/byte, so the placement
-is on the right track but not yet exact - the overlapping 2-bit reads need the masked
-(not the whole) value, and one 32-bit read at the end returns null.
+Reassembly note: the sweep is **not** one contiguous pass. The gap histogram is `0` for
+13341 of 13481 consecutive reads, but two jumps of 32118 and 59064 bits split it into
+three segments, and 17+5 reads step backwards (the 2-bit re-reads). Placing the returned
+values by position therefore covers only 103034 of 178824 bits (57.6 %): the two skipped
+bands are simply not read on this path, they must be pulled on demand by another accessor
+(`R3`/`YY` for field objects). Entropy of the reconstructed 57 % is 4.88 bits/byte versus
+7.75 for the ciphertext, and short runs like `divprotectcache_y` come out readable, so the
+placement is right where it covers.
+
+To finish the plaintext program: log the read positions of the other accessor paths too
+(`R3`, and whatever reads field values), then merge all segments.
 
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
