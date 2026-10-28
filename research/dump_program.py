@@ -102,7 +102,12 @@ def validate(buf: bytearray, log: list, vals: list) -> dict:
             bits.append((byte >> i) & 1)
     ok = bad = skipped = 0
     first = None
+    malformed = 0
     for entry, val in zip(log, vals):
+        if not (isinstance(entry, list) and len(entry) == 3
+                and all(isinstance(x, (int, float, bool)) for x in entry)):
+            malformed += 1
+            continue
         cnt, flag, start = int(entry[0]), int(entry[1]), int(entry[2])
         logged = int(val[1]) if isinstance(val, list) else int(val)
         if flag == 0:
@@ -119,7 +124,8 @@ def validate(buf: bytearray, log: list, vals: list) -> dict:
             bad += 1
             if first is None:
                 first = {"start": start, "bits": cnt, "logged": logged, "recovered": got}
-    return {"match": ok, "mismatch": bad, "skipped_plaintext": skipped, "first_mismatch": first}
+    return {"match": ok, "mismatch": bad, "skipped_plaintext": skipped,
+            "malformed_entries": malformed, "first_mismatch": first}
 
 
 AB_JS = r"""(async () => {
