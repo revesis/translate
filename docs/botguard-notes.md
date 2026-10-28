@@ -322,3 +322,30 @@ framing. The readers are `JY`, `B`, `a`, `R3` in the interpreter; wrapping them 
 frame realm (trust does not matter for this - it is data collection) gives the executed
 instruction stream directly, and the state machine's dispatch (`D` / `ZS`, which write
 `this.h[field]`) can then be mapped opcode by opcode.
+
+---
+
+## 10. Dispatch tracing (the decompiler's first instrument)
+
+Names, line numbers and script ids all rotate per run, so nothing can be hard-coded -
+but a breakpoint can be *discovered*: pause at random, scan the call stack for the
+dispatcher (it appears as `cH` on this build), take its `(scriptId, line, column)` from
+that very stack, set a breakpoint there, resume. Every later hit is deterministic.
+
+State observed at the dispatcher on 400 consecutive hits:
+
+| arg | value | meaning |
+| --- | --- | --- |
+| `b` | 230 | the field id holding the bit counter |
+| `F` | 2768, 2818, 2846, … 36568, 36592 | current **bit offset** into the program |
+| `L` | 178824 | total program bits - exactly `22353 * 8`, i.e. `NU.length << 3` |
+| `J` | 29932, 29931, 29930, … | bits remaining (decreases by the instruction width) |
+| `Y` | 201 (constant in all 400 hits) | a kind tag, **not** the opcode |
+
+Bit-offset deltas over the trace: 26, 24, 42, 50, 34, 68, 32, 0 (all even, with `0`
+repeating ~8 % of the time - several dispatch entries per instruction). Offsets also
+jump between regions (2768 → 35212), so the trace covers several functions.
+
+This gives the instruction stream as `(bit offset, remaining bits)` pairs without
+knowing the encoding in advance. Next: read the bits at those offsets with the reader
+semantics from §9 and correlate the widths with the deltas to recover the opcode layout.
