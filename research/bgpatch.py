@@ -61,7 +61,11 @@ def find_name(s: str, upto: int, vm: str):
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
-          writes=False, killswitch=False):
+          writes=False, killswitch=False, sink=None, canary=False):
+    """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
+    default, or "(window.top||window)" when the VM runs in a frame that may be removed
+    before the caller can look at it)."""
+    S = sink or "window"
     r = find_reader(src)
     name, params = find_name(src, r["start"], r["vm"])
     seg = src[r["start"]:r["start"] + 2600]
@@ -89,10 +93,10 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
 
     if entry:
         entry_old = src[r["start"]:r["end"]]
-        entry_new = ("if((" + r["ptr"] + "=(window.__fp!=null&&window.__fpv===" + r["vm"]
-                     + ")?window.__fp:" + r["call"] + "," + r["ptr"] + ")>=" + r["vm"] + "."
+        entry_new = ("if((" + r["ptr"] + "=(" + S + ".__fp!=null&&" + S + ".__fpv===" + r["vm"]
+                     + ")?" + S + ".__fp:" + r["call"] + "," + r["ptr"] + ")>=" + r["vm"] + "."
                      + r["vfld"] + ")throw[" + r["arr"] + ",31];"
-                     "window.__fp==null&&(window.__rd=window.__rd||[]).push(["
+                     + S + ".__fp==null&&(" + S + ".__rd=" + S + ".__rd||[]).push(["
                      + bits_name + "," + flag_name + "," + r["ptr"] + "]);")
         src = src.replace(entry_old, entry_new, 1)
 
@@ -114,11 +118,11 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             raise SystemExit("unexpected reader return tail: " + ret_old)
         pre = ""
         if blockcache and cache_field:
-            pre = ("(window.__r!==" + r["vm"] + "." + cache_field + "&&(window.__r="
-                   + r["vm"] + "." + cache_field + ",window.__blk(" + r["vm"] + "."
+            pre = ("(" + S + ".__r!==" + r["vm"] + "." + cache_field + "&&(" + S + ".__r="
+                   + r["vm"] + "." + cache_field + "," + S + ".__blk(" + r["vm"] + "."
                    + cache_field + "," + r["vm"] + "))),")
         ret_new = (ret_old[:-len(tail)] + "," + pre
-                   + "(window.__fp==null&&(window.__rv=window.__rv||[]).push(["
+                   + "(" + S + ".__fp==null&&(" + S + ".__rv=" + S + ".__rv||[]).push(["
                    + bits_name + "," + retvar + "]))," + retvar + "}")
         src = src.replace(ret_old, ret_new, 1)
 
@@ -131,18 +135,19 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # optional single-byte mutation of the loaded program, for A/B runs:
         # `window.__mut = N` flips plaintext byte N (the array is decrypted per read, so
         # flipping the stored byte flips what the reader returns).
-        boot_new = (boot_old + ",(window.__mut!=null&&(" + seed_vm + "." + prog_field
-                    + "[window.__mut]^=1))," + seed_vm + ".__booted=1,window.__vmref=" + seed_vm
-                    + ",window.__JY=" + name
-                    + ",window.__vmeta={V:" + seed_vm + "." + vfield + ",prog:" + seed_vm + "."
+        boot_new = (boot_old + ",(" + S + ".__mut!=null&&(" + seed_vm + "." + prog_field
+                    + "[" + S + ".__mut]^=1))," + seed_vm + ".__booted=1," + S + ".__booted=1,"
+                    + S + ".__vmref=" + seed_vm
+                    + "," + S + ".__JY=" + name
+                    + "," + S + ".__vmeta={V:" + seed_vm + "." + vfield + ",prog:" + seed_vm + "."
                     + prog_field + ",seed:" + seed_vm + ".l"
                     + ((",fd:" + seed_vm + "." + fd_name) if fd_name else "") + "}")
         if blockcache and cache_field:
-            boot_new += (",window.__prog=window.__prog||{},window.__blk=function(n,v){"
-                         "if(n==null)return;var i,q;window.__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;window.__fp=q;"
-                         "window.__prog[n]=window.__prog[n]||[];"
-                         "window.__prog[n][i]=window.__JY(" + read_args + "v);}"
-                         "window.__fp=null;window.__fpv=null;}")
+            boot_new += ("," + S + ".__prog=" + S + ".__prog||{}," + S + ".__blk=function(n,v){"
+                         "if(n==null)return;var i,q;" + S + ".__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;"
+                         + S + ".__fp=q;" + S + ".__prog[n]=" + S + ".__prog[n]||[];"
+                         + S + ".__prog[n][i]=" + S + ".__JY(" + read_args + "v);}"
+                         + S + ".__fp=null;" + S + ".__fpv=null;}")
         if sweep:
             boot_new += (",window.__sweep=function(){var v=window.__vmref,o=[],p;"
                          "window.__fpv=v;try{for(p=0;p<v." + vfield + ";p+=8){window.__fp=p;"
@@ -197,6 +202,22 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         info_writer = {"writers_patched": cop, "skip_ids": [id_ptr, id_cat],
                        "mode": "killswitch" if killswitch else "writes"}
 
+    if canary:
+        # Canary on the VM entry the object exposes (`d.a = NAME`): if the counter fires, the
+        # code we call really is the text we patched. A build can define NAME more than once
+        # (the last definition wins), so every definition is instrumented.
+        ma = re.search(r"\.a=(\w+)\)", src)
+        if not ma:
+            raise SystemExit("VM entry anchor (.a=NAME) not found")
+        entry_name = ma.group(1)
+        n_defs = 0
+        for f in reversed(list(re.finditer(re.escape(entry_name) + r"=function\([^)]*\)\{", src))):
+            src = src[:f.end()] + "window.__REntry=(window.__REntry||0)+1;" + src[f.end():]
+            n_defs += 1
+        info_canary = {"entry": entry_name, "entry_defs_patched": n_defs}
+    else:
+        info_canary = {}
+
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
     # indistinguishable from "nothing to log".
@@ -206,4 +227,5 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             "cache_field": cache_field, "vfield": vfield, "prog_field": prog_field,
             "seed_field": seed_id, "seed_call": seed_call}
     info.update(info_writer)
+    info.update(info_canary)
     return src, info

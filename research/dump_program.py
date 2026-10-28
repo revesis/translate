@@ -38,6 +38,9 @@ from bgr_sidecar import DEFAULT_UA, ChromeSession  # noqa: E402
 import bgpatch  # noqa: E402
 
 URL = "https://translate.google.com/?sl=auto&tl=zh-CN&op=images"
+# The VM boots inside a frame that can be gone before the caller looks, so instrumentation
+# state is written to the top window instead of the realm that runs the code.
+TOP_SINK = "(window.top||window)"
 CHROME = "/usr/bin/google-chrome-stable"
 
 JS = r"""(async () => {
@@ -291,7 +294,12 @@ FIELDS_JS = r"""(async () => {
   for (const w of realms) { try { if (!meta.V && w.__vmeta) meta = w.__vmeta; } catch (e) {} }
   const vmDiag = {};
   try {
-    vmDiag.booted = VM.__booted || 0;
+    vmDiag.booted = VM.__booted || window.__booted || 0;
+    vmDiag.entry = window.__REntry || 0;
+    vmDiag.comp = (window.__comp || []).slice(0, 6);
+    vmDiag.evs = (window.__evs || []).slice(0, 6);
+    vmDiag.topRd = (window.__rd || []).length;
+    vmDiag.topWr = (window.__wr || []).length;
     vmDiag.vmeta = VM.__vmeta ? 1 : 0;
     vmDiag.rd = (VM.__rd || []).length;
     vmDiag.wr = (VM.__wr || []).length;
@@ -490,7 +498,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                     await cs.send("Page.removeScriptToEvaluateOnNewDocument", identifier=script_id)
                     script_id = None
                 orig = arr[2]
-                src, info = bgpatch.patch(arr[5][-1], blockcache=False, writes=True)
+                src, info = bgpatch.patch(arr[5][-1], blockcache=False, writes=True,
+                                          sink=TOP_SINK, canary=True)
                 print(f"attempt {attempt + 1}: injected patched interpreter for build "
                       f"{orig[:16]}, reloading")
                 # Clear the name first (the page's own bootguard may have claimed it) and keep
@@ -498,7 +507,14 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 # last wins the global - and the page has more chances to write it than we do.
                 injected = ("try{window.ridgeslice=void 0}catch(e){};" + src
                             + ";window.__MINE=1;window.__MINEV=window.ridgeslice;"
-                            "window.__aCalls=0;window.__aVals=0;"
+                            "window.__aCalls=0;window.__aVals=0;window.__comp=[];window.__evs=[];"
+                            "(function(){var F=window.Function;window.Function=function(){"
+                            "try{var a=arguments[arguments.length-1];var t=String(a);"
+                            "window.__comp.push([t.length,t.indexOf('__MINE'),t.slice(0,40)]);}"
+                            "catch(e){}return F.apply(this,arguments);};})();"
+                            "(function(){var e=window.eval;window.eval=function(x){"
+                            "try{var t=String(x);window.__evs.push([t.length,t.indexOf('__MINE'),t.slice(0,40)]);}"
+                            "catch(q){}return e.call(window,x);};})();"
                             "(function(){var v=window.__MINEV;if(!v||typeof v.a!==125)try{}catch(e){} })();"
                             "(function(){var v=window.__MINEV;if(v&&typeof v.a==='function'){var o=v.a;"
                             "v.a=function(){window.__aCalls++;var r=o.apply(this,arguments);"

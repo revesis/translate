@@ -989,3 +989,46 @@ site, verify with `__booted`, and only then claim the inner pipeline is instrume
 Until then: `--fields` without `--early` still works on some loads (sections 20 and 22), `--early`
 does not work, and the corpus run over several payload lengths is on hold because the capture has
 to be stable first.
+
+## 24. Step 1 resolved far enough to name the real problem: the frame realm is unreachable
+
+Three probes were added to answer "is the code we call the code we patched":
+
+1. **Entry canary** - `d.a = NAME` names the VM entry; every definition of `NAME` gets
+   `window.__REntry++`. A build defines that name more than once (2-4 times), so all of them are
+   instrumented.
+2. **Compile hooks** - `Function` and `eval` are wrapped at document start, recording
+   `[length, indexOf('__MINE')]` for every compiled string.
+3. **Top-window sink** - all instrumentation state written to `(window.top||window)` instead of
+   the local `window`.
+
+Measured (Fhxs, injected early, two mints):
+
+```
+vmDiag: {entry: 2, comp: [], evs: [], booted: 0, topRd: 0, topWr: 0, aCalls: 2, aVals: 2,
+         isGlobal: 0, aLen: 112}
+tokA: 768   tokB: 616
+```
+
+Reading it:
+
+* `entry: 2` and `aCalls: 2` - the entry point we call **is** the patched text, and it ran twice.
+* `comp: []`, `evs: []` - **no** string was compiled in that realm. So the inner program is
+  compiled in another realm, which is also why the reader/boot patches inside our own text never
+  fire there: that text is only the outer scaffolding in this realm.
+* `topRd: 0` with the top sink, and every instrumented run lands at 600-1300 characters instead of
+  the 1405-1447 trusted range - with the top sink the instrumentation does not survive at all,
+  which is what a cross-origin frame writing to `window.top.__rd` would do (the access throws).
+
+So the real blocker is not injection order, not the anchor set, and not the writer copies: **the
+frame realm that does the work cannot be reached from the page**, and its own `window` state dies
+with it before the caller looks.
+
+Concrete next step, no longer speculative: stop reading state *out* of that realm and let it push
+itself out with `window.parent.postMessage(...)`, which works across origins, called from inside
+the reader/writer hooks (batched, e.g. every N entries plus once at the end of the mint). Keep
+`sink=window` for the state, add the message bridge, and the page assembles the log itself.
+
+Until that exists, the rule from section 22 stands: `--fields` with `sink=window` works on some
+loads (sections 20/22), `--early` with the top sink does not, and the payload-corpus and mutation
+sweep items stay blocked behind a stable capture.
