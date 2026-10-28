@@ -486,8 +486,28 @@ That also explains the read gaps: fields are created lazily by `R` and only pull
 program when dereferenced (`z` -> `.value` -> `w` -> `.create()`), so the two skipped bands
 are read by that lazy path rather than by `JY` during the initial sweep.
 
-To finish the plaintext program: instrument `R` as well (it is the factory behind every
-field), then merge its reads with `JY`'s.
+### 13. Keystream capture does not give offline decryption (negative result)
+
+The keystream is observable: logging `L.hq` right after it is regenerated gives eight bytes
+per block, with a constant per-load seed (`t.i = -1154219265` in one run) and
+`Y[1] = Y[2] = 0`:
+
+```
+block 0: 160  74 159 168  38 213  68 165
+block 1:  35 175  96  20 202 198  77  59
+block 2: 135  47 140 239 247 171 224  57
+```
+
+Trying to decrypt `NU` offline with those blocks (`byte u ^= ks[u>>3][u & 7]`) **fails**:
+only 343 of 2795 blocks were regenerated in that run (12.3 % of the program), and the
+resulting bytes are noise (entropy 7.94). So the captured keystream is not directly
+indexable as "byte u uses ks[u >> 3][u & 7]", and re-implementing `WH` is not an option
+either - the `sh` helper it calls is a different function in this build (the name is
+reused by a DOM helper), so the source cannot be lifted as-is.
+
+Consequence: the reliable artifact is the **logged return values** of `JY` (true plaintext,
+no keystream needed), not an offline decryptor. The gaps have to be filled by instrumenting
+the lazy field path (`R`/`T` -> `.create()`), not by keystream math.
 
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
