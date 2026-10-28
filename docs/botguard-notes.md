@@ -365,5 +365,23 @@ that the trace is walking a loop. A uniform-distribution check over 4-8 bit wind
 *unscaled* offsets showed nothing (5-15 % concentration); with the x2 scaling a 4-bit
 field concentrates 44 % on 14 of 16 values.
 
-Next: pin down what follows the 4-bit field (operand widths per opcode, from the offset
-deltas) and map the opcodes to the handlers seen in the stack (`cH` -> `eT` -> `z`/`k`).
+### Instruction widths converge per opcode
+
+Using the scaled offsets, the distance to the next instruction (`(F_next - F) * 2` bits)
+is *consistent per opcode value*, which is what a real encoding looks like:
+
+| 4-bit field | instruction width | count |
+| --- | --- | --- |
+| 4 | 52 bits (also 68 and 136) | 18 / 9 / 9 |
+| 10 | 52 bits | 9 |
+| 12 | 84 bits | 9 |
+| 3 | 100 and 64 bits | 2 / 1 |
+| 15 | 48 / 56 bits | 2 / 1 |
+
+Every width is a multiple of 4, so the layout is `4-bit opcode + fixed-size operands`
+(op 12 carries 80 operand bits = 10 bytes, op 10 carries 48 bits = 6 bytes). The very
+large widths in the table above are the region jumps, not instructions.
+
+Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
+10-byte operand should be a constant or a field reference), then map opcodes to the
+handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
