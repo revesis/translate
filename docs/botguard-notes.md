@@ -2010,3 +2010,121 @@ alignment unambiguous.
 With that, the token's byte layout is measured end to end for one build: `preamble(5) + emitted
 chunks(843) + 3 stray bytes`, in emission order, and every chunk's payload is either known (<=16B)
 or known by length.
+
+## 39. The three stray bytes are the emitter's flag argument, and the accounting now closes exactly
+
+Section 38 left three single bytes between chunks and called them "written by the encode-time path
+that the emit hook does not see". That is **withdrawn**: they are pushed by the emitter itself, as a
+*leading* byte before the payload, and the hook simply never looked at the argument that carries it.
+
+### The measurement
+
+Both emitter shapes push a flag byte before the data:
+
+```js
+qj = function(b,F,t,J,...){while(b.C==b){ ... J&&L(255-~(J&255)+-256),P=F.length,Y=0;Y<P;Y++)L(F[Y]); ...}}
+ax = function(b,F,t,J,...){if(t.C==t)for(...){ ... J&&Y(255-~(J&255)+-256),P=F.length,G=0;G<P;G++)Y(F[G]); ...}}
+```
+
+`255-~(J&255)+-256` is `J&255` written obfuscated (`~x = -(x+1)`), so the call emits **one extra byte
+`J&255` when `J` is truthy**, then the payload. The hook logged `(fieldId, data.length, data[0], …)`
+and nothing about `J`, which is exactly one unexplained byte per call with a truthy `J`.
+
+The hook now logs it (7th element, `(J&255)|0`), and the accounting closes byte for byte. One Fhxs
+run, token 1005 chars:
+
+```
+token 753 bytes = nonce(2) + field146(751)
+field146 = b8 96 cc  +  stream(748)
+stream   = concatenation over field-146 emissions of (flag? 1 byte : 0) + payload
+exact=True   (748 of 748 bytes identical, not "covered" - equal)
+flags    = [0x75, 0x62, 0x63, 0x17]      # four calls had a truthy J
+```
+
+Reproduce: `python3 research/align_emits.py /tmp/bg-e-10432/one.json` →
+`stream 748 B  body 748 B  exact=True`.
+
+### What that says about the token's shape
+
+* `token = nonce(2) + field146`, and `field146 = head(3) + Σ(flag + payload)`. The three head bytes
+  are `b8, token[1], x` — i.e. the nonce's *second* byte appears twice, which is the `C[1]=C[0]^30`
+  invariant of section 1 seen from the field side (`token[0]^token[1] == 0x1e` on all six runs
+  measured: `35 2b`, `43 5d`, `1e 00`, `65 7b`, `18 06`, `7a 64`).
+* The concat graph is now measured, not inferred (`research/probe_concat.py`, CDP hooks on
+  `Array.prototype.push/concat` in the frame realm, pristine mint):
+
+```
+concat id257(2B) + id258(2B)      x4      -> 4-byte pieces
+concat id278(2B) + id90(64B)
+concat id280(2B) + id279(71B)
+concat id281(2B) + id99(876B)
+concat id282(2B) + id250(1054B)   <- the token: 2 + 1054 = 1056 bytes
+```
+
+  so the serializer builds *pieces* as `nonce(2) + field(n)` and the last one is `nonce + field146`.
+  Field 146's own pushes are visible in the same log: array id 250 has 966 pushes covering
+  `n = 88..1053` with **no gaps in `n`**, i.e. every byte of the buffer - flag bytes included - is an
+  `Array.prototype.push`.
+* Field buffers are drained before `btoa` (`vm.h[146].prototype` has no `length`, `create()` returns
+  `undefined`), so the buffer can only be read while it is being built (push hook) or from the token
+  itself. `research/probe_serializer.py` confirms this and returns the pre-encode string (1085 B on a
+  trusted run).
+
+### Which handler produces which chunk (section 38's question 1)
+
+`research/disasm.py --emit-log` joins an emission to the instruction that was executing (read-count
+window). The head of the token is emitted by **three-token instructions of the form
+`[op, sourceField, 146]`**, and the op set is stable across runs of the same build family:
+
+| op | bytes written | verified against the write log (run 10432) |
+| --- | --- | --- |
+| 163 | 1 | field 7 = 208 → `d0`; field 27 = 38 → `26`; field 92 = 95 → `5f` |
+| 460 | 4 (uint32 BE) | field 50 = 372310253 → `16 31 00 ed`; field 72 = -1560620949 → `a2 fa d0 6b` |
+| 490 | 2 + n | field 40 = `[11,119,101,235,43,119]` → `00 06` + the section-1 marker; field 72 = 64 B → `00 40` + 64 B |
+
+The *argument* is a source field id and rotates per run (run e1: 65/91/102/112/62/19/87; run 10432:
+7/40/92/50/72/27/72), which is why an earlier note could not see a constant layout: the template is
+constant, the field ids are not. A fourth op, 118, emits into field 97 with the same `len16 + bytes`
+shape (it is the one that produced the 57732-byte "emission" in run e1 - a real value, not a hook
+artefact).
+
+The **tail records are serializer-phase**: their read count equals the final read count
+(`rv = 19080` = end of the program), so they have no instruction window and are not program
+instructions at all. Shape, measured: `[flag][len16][data]`, e.g.
+
+```
+flag 0x75 + [01]                 flag 0x63 + [00 09] + 9 B
+flag 0x62 + [00 02] + 2 B        flag 0x17 + [02 85] + 645 B     (into field 473 for 0x62)
+```
+
+The flag is not a constant of the format: 0x75 and 0x63 repeated across runs, the bulk record's flag
+was 0x17 in one run and 0xeb in another, so it is a per-run id (a field id or a schema tag) that the
+serializer passes as the emitter's 4th argument. **Open:** identify the serializer function that
+passes it - the cheapest instrument is a CDP `Debugger.setBreakpoint` on the emitter entry (invisible
+to the VM, unlike a JS-level hook) and reading `callFrames[1]` for the five tail calls.
+
+### What the >16 B payloads actually contain (section 38's question 3)
+
+The hook now logs every payload up to 4096 B (base64), so the bulk is readable. It is **opaque**:
+
+```
+payload 647 B = [02 85] (len16 = 645) + 645 B body
+body entropy 7.68 bits/byte, 0.363 printable, no ASCII run >= 6, no nested [len16][value] parse
+```
+
+So the bulk is high-entropy *before* it reaches field 146, and field 146 is the un-XORed emitter path
+(section 34) - the data is not encrypted on the way out, it is already random/encrypted when the
+program writes it. Reading its content therefore needs the generating handler, not the token; this
+is the same conclusion section 13/17 reached for the keystream, now with the payload in hand instead
+of inferred.
+
+### Limits of the instrument
+
+* The emit hook matches the Fhxs emitter shape only (`while(vm.C==vm)` / `if(t.C==t)` guard after
+  `=function(...){`). EON and pBm loads log **0** emissions; their emitters are state machines
+  (`B==80?(R.push(R.s8[-~(a&7)+(a^7)+(~a^7)]^u),B=3)`), so the detector has to key off
+  `X.push(X.TABLE[<any index>]^byte)` and take the field id from the buffer, not from a parameter.
+  Until that exists, every emission measurement needs a Fhxs load (roughly one load in two).
+* The flag byte and the payload are logged at *function entry*, so a call with `J` truthy but
+  `J&255 == 0` is indistinguishable from a call with no flag. No such call was observed, but the
+  accounting would silently stay correct-by-length and wrong-by-position if one appeared.

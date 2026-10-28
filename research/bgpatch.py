@@ -512,13 +512,25 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             else:
                 fid_arg = next((x for x in ps[:3] if x != vm_arg), ps[0])
             data_arg = next((x for x in ps[:4] if x not in (vm_arg, fid_arg)), ps[1])
-            # small chunks are logged in full: comparing them with the field values in the write
-            # log is what ties an emission to the field it came from
+            # Every emitter call may push one extra byte *before* the payload:
+            #   `J&&L(255-~(J&255)+-256)` then `for(...)L(data[i])`
+            # (the expression is `J&255` written obfuscated). That byte is the "stray" between
+            # chunks of section 38, so the flag is logged and the accounting closes.
+            flag_arg, flag_expr = None, None
+            mflag = re.search(r"(\w+)&&\w+\(255-~\(\1&255\)\+-256\)", src[m.end():m.end() + 800])
+            if mflag:
+                flag_arg = mflag.group(1)
+                flag_expr = mflag.group(0)
+            # the whole payload is logged (base64) up to FULL_CAP: the bulk chunk is where the
+            # collected data lives, and knowing only its length was the blocker for section 39
             inject = ("(" + vm_arg + ".__em=" + vm_arg + ".__em||[]).push([" + fid_arg + ",("
                       + data_arg + "&&" + data_arg + ".length)|0,(" + data_arg
                       + "&&" + data_arg + "[0])|0,(" + vm_arg + ".__rv||[]).length,"
                       "(" + data_arg + "&&" + data_arg + ".length<=16?Array.prototype.slice.call("
-                      + data_arg + ",0,16):null)]);")
+                      + data_arg + ",0,16):null),(" + data_arg + "&&" + data_arg
+                      + ".length<=4096?btoa(String.fromCharCode.apply(null,Array.prototype.slice.call("
+                      + data_arg + ",0,4096))):null),("
+                      + ((flag_arg + "&255") if flag_arg else "0") + ")|0]);")
             if src[m.end():m.end() + 1] == "{":
                 # inside the loop/if body: `while(vm.C==vm){(log); ...original }`
                 at = m.end() + 1
