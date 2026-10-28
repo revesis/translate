@@ -2099,7 +2099,10 @@ flag 0x62 + [00 02] + 2 B        flag 0x17 + [02 85] + 645 B     (into field 473
 
 The flag is not a constant of the format: 0x75 and 0x63 repeated across runs, the bulk record's flag
 was 0x17 in one run and 0xeb in another, so it is a per-run id (a field id or a schema tag) that the
-serializer passes as the emitter's 4th argument. **Open:** identify the serializer function that
+serializer passes as the emitter's 4th argument. It is **not** simply "the source field's id": in the
+two runs whose flag was 0x17, field 23 was written (`253` at rv 0), but in the 0xeb run field 235 does
+not appear in the write log at all - so the tag rotates with the build, exactly like field ids and op
+ids (section 15), and has to be measured per run instead of being mapped once. **Open:** identify the serializer function that
 passes it - the cheapest instrument is a CDP `Debugger.setBreakpoint` on the emitter entry (invisible
 to the VM, unlike a JS-level hook) and reading `callFrames[1]` for the five tail calls.
 
