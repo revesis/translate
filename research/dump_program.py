@@ -167,6 +167,59 @@ AB_JS = r"""(async () => {
 })()"""
 
 
+TWICE_JS = r"""(async () => {
+  const arr = %s;
+  const src = %s;
+  const freq = %s;
+  try { delete window.ridgeslice; } catch (e) {}
+  let evalErr = null;
+  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  const VM = window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  try { delete window.ridgeslice; } catch (e) {}
+  const noop = () => {};
+  const realms = [window];
+  const walk = (w) => {
+    let frames = [];
+    try { frames = Array.from(w.document.querySelectorAll('iframe')); } catch (e) { return; }
+    for (const f of frames) {
+      try { const c = f.contentWindow; if (c) { realms.push(c); walk(c); } } catch (e) {}
+    }
+  };
+  const mint = async () => {
+    const api = await new Promise((res, rej) => {
+      try { VM.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+      catch (e) { rej(e); }
+    });
+    return await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
+  };
+  const collect = () => {
+    walk(window);
+    for (const w of realms) {
+      try { if (w.__prog && Object.keys(w.__prog).length) return w; } catch (e) {}
+    }
+    return null;
+  };
+  const take = (w) => {
+    const out = {};
+    for (const k of Object.keys(w.__prog || {})) out[k] = w.__prog[k];
+    return out;
+  };
+  const tok1 = await mint();
+  const w1 = collect();
+  if (!w1) return JSON.stringify({ stage: 'no capture 1', tok1: tok1.length });
+  const first = take(w1);
+  const meta = w1.__vmeta || {};
+  for (const w of realms) { try { w.__prog = {}; } catch (e) {} }
+  const tok2 = await mint();
+  const w2 = collect();
+  const second = w2 ? take(w2) : {};
+  return JSON.stringify({ tok1: tok1.length, tok2: String(tok2).length, V: meta.V,
+                          nu: (meta.prog || []).length, seed: meta.seed,
+                          first: Object.entries(first), second: Object.entries(second) });
+})()"""
+
+
 class CS(ChromeSession):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -208,7 +261,8 @@ def parse_material(html: str) -> str:
     return material
 
 
-async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False) -> None:
+async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
+              twice: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -229,6 +283,35 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                                   sweep=sweep or ab)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("patch:", {k: v for k, v in info.items() if k != "params"})
+        if twice:
+            d = json.loads(await cs.eval(TWICE_JS % (json.dumps(arr), json.dumps(src),
+                                                     json.dumps(freq))))
+            print({k: v for k, v in d.items() if k not in ("first", "second")})
+            nbytes = d.get("nu") or 0
+            if not nbytes:
+                return
+            bufs = []
+            for tag in ("first", "second"):
+                buf = bytearray(nbytes)
+                mask = bytearray(nbytes)
+                for idx, vals in d.get(tag) or []:
+                    for k, val in enumerate(vals):
+                        pos = int(idx) * 8 + k
+                        if pos < nbytes:
+                            buf[pos] = int(val) & 255
+                            mask[pos] = 1
+                print(tag, "blocks", len(d.get(tag) or []), "bytes", sum(mask))
+                bufs.append((buf, mask))
+            (b1, m1), (b2, m2) = bufs
+            both = sum(1 for i in range(nbytes) if m1[i] and m2[i])
+            same = sum(1 for i in range(nbytes) if m1[i] and m2[i] and b1[i] == b2[i])
+            print(f"overlap {both} bytes, identical {same}",
+                  round(same / both, 4) if both else "-")
+            diff = [i for i in range(nbytes) if m1[i] and m2[i] and b1[i] != b2[i]]
+            print("differing offsets:", diff[:10], "count", len(diff))
+            open(os.path.join(out, "program_twice_1.bin"), "wb").write(bytes(b1))
+            open(os.path.join(out, "program_twice_2.bin"), "wb").write(bytes(b2))
+            return
         if ab:
             d = json.loads(await cs.eval(AB_JS % (json.dumps(arr), json.dumps(src),
                                                    json.dumps(freq))))
@@ -294,11 +377,13 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--twice", action="store_true",
+                    help="two mints in one page; compare the two recovered buffers")
     ap.add_argument("--ab", action="store_true",
                     help="mint once naturally then once with the forced sweep (negative control)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab))
+    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice))
 
 
 if __name__ == "__main__":

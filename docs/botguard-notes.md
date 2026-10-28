@@ -618,26 +618,46 @@ the block cache changed, it walks the eight byte-aligned offsets of the block wi
 bit pointer; the pointer store that immediately follows puts the VM's own pointer back, which
 is why the run keeps working long enough to finish the sweep.
 
-Measured (`research/dump_program.py`, block-capture mode, two runs on different builds):
+Measured with `research/dump_program.py` (block-capture mode). Two mints of the *same* program
+in one page load, with the real `f_req` payload:
 
 ```
-build EONwmJdvD0_ interp 66684, V 176728 bits, nu 22091 bytes
-blocks captured: 2762, bytes known: 22091 / 22091 (1.0)
-validation: match 2761  mismatch 0  skipped_plaintext 1
-
-build EONwmJdvD0_ interp 66684, V 178720 bits, nu 22340 bytes
-blocks captured: 2793, bytes known: 22340 / 22340 (1.0)
-validation: match 2792  mismatch 0  skipped_plaintext 1
+token 1041 / 1041, V 177696 bits, nu 22212 bytes
+instance 1: 351 blocks, 2808 bytes
+instance 2: 351 blocks, 2808 bytes
+overlap 2808 bytes, identical 2808 (1.0), differing offsets: none
 ```
+
+and with a short synthetic payload, where the program flow is longer:
+
+```
+token 3229 / 3229, V 178336 bits, nu 22292 bytes
+instance 1: 1342 blocks, 10736 bytes
+instance 2: 1342 blocks, 10736 bytes
+overlap 10736 bytes, identical 10736 (1.0)
+```
+
+So the capture is reproducible and non-destructive enough that both instances complete a
+normal mint. Coverage per run is the blocks that run regenerates - 351 of 2777 blocks with the
+real payload (12.6 %), 1342 of 2787 with the synthetic one (48.2 %) - which is the number that
+matters: the instrument turns "one byte asked for per block" into "all eight bytes of every
+visited block", it does not create blocks the run never enters.
+
+Single-instance runs validated against their own log:
+
+```
+blocks 2762, bytes known 22091/22091 (1.0), validation match 2761 mismatch 0 skipped 1
+blocks 2793, bytes known 22340/22340 (1.0), validation match 2792 mismatch 0 skipped 1
+```
+
+Both of those ended in the VM's error regime (token length 48) and walked *every* block, which
+is what the forced reads do to a run: pushing the pointer to block boundaries turns the program
+into a sequential scan. The values are still right (the reads match), but do not read those two
+rows as "a normal run covers 100 %" - a normal run is the 351/1342-block picture above.
 
 "validation" bit-slices the recovered buffer at every position the run's own log recorded and
-compares with the value the VM returned there; the one skipped read is the 32-bit seed fetch,
-which the VM takes with the decrypt flag off and the buffer takes decrypted. Zero mismatches
-across ~2 800 reads is what makes the buffer trustworthy.
-
-Honest limit: this validates the byte the program actually asked for in each block. The other
-seven bytes of a block are produced by the same table through the same code path but are not
-independently confirmed by a second reader, because there is no second reader (section 14).
+compares with the value the VM returned there; the single skipped read is the 32-bit seed fetch,
+which the VM takes with the decrypt flag off and the buffer holds decrypted.
 
 Reproduce:
 

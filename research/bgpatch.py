@@ -133,7 +133,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                     + ((",fd:" + seed_vm + "." + fd_name) if fd_name else "") + "}")
         if blockcache and cache_field:
             boot_new += (",window.__prog=window.__prog||{},window.__blk=function(n,v){"
-                         "var i,q;window.__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;window.__fp=q;"
+                         "if(n==null)return;var i,q;window.__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;window.__fp=q;"
                          "window.__prog[n]=window.__prog[n]||[];"
                          "window.__prog[n][i]=window.__JY(" + read_args + "v);}"
                          "window.__fp=null;window.__fpv=null;}")
