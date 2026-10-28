@@ -850,3 +850,26 @@ two or three copies per build, and at least one live writer must take a differen
 "works on some builds": when `wrA` is empty, reload and retry rather than trusting an empty
 diff.
 
+
+### Build dependence of the random fields
+
+The same experiment on the EONwm build gives **two** random four-byte fields, not three:
+
+```
+field writes: A=516  B=516          (same payload twice)
+positions differing: 3
+  456  4B  [183,210,202,52] | [236,153,252,49]
+   36  4B  [89,131,244,38]  | [97,163,51,239]
+   21  0B  1793166465419    | 1793166466652     <- clock
+```
+
+So the class breakdown holds (skeleton / random / clock / content) but the *count* of random
+fields and every id in it is per build: 473+474+277 with the clock at 86 in Fhxs, 456+36 with
+the clock at 21 in EONwm. Anything that hard-codes an id will work for one build and silently
+do the wrong thing on the next.
+
+Two robustness fixes landed with these runs: the boot anchor now accepts `length<<3` or
+`length*8` and a nested `atob(...)` call (one build - `TsNWy9jFi…`, interp 66517 - did not match
+the old pattern at all), and `--fields` retries the mint up to three times when the write log
+comes back empty.
+

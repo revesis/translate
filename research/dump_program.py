@@ -355,9 +355,20 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         if fields:
             fb = freq if (same or mutate is not None) else (
                 freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
-            d = json.loads(await cs.eval(FIELDS_JS % (json.dumps(arr), json.dumps(src),
-                                                      json.dumps(freq), json.dumps(fb),
-                                                      "null" if mutate is None else str(mutate))))
+            # the write log comes back empty on some runs even though the reader fired (the
+            # live writer can sit in a copy the anchor misses), so retry a few times before
+            # treating an empty diff as a result
+            d = {}
+            for attempt in range(3):
+                d = json.loads(await cs.eval(FIELDS_JS % (
+                    json.dumps(arr), json.dumps(src), json.dumps(freq), json.dumps(fb),
+                    "null" if mutate is None else str(mutate))))
+                if d.get("wrA") and d.get("wrB"):
+                    if attempt:
+                        print(f"capture succeeded on attempt {attempt + 1}")
+                    break
+                print(f"attempt {attempt + 1}: empty write log, retrying")
+                await asyncio.sleep(2)
             print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
             print("realm states:", d.get("states"))
             a, b = d.get("wrA") or [], d.get("wrB") or []
