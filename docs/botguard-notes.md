@@ -75,11 +75,29 @@ run:
 | `dc`, `xE`, `IA`, `Zh`, `pu` | 0 length | unused on this path |
 | `C` | 54 keys | back-reference to the instance |
 
-The `h` slots are **factories, not values**: at encode time `create()` on the
-interesting ids (146, 277, 261, 311, 323, 444, 473, 474, 495, 117) returns
-`undefined`, because the serializer has already consumed them. Only 21 and 230 return
-numbers (140846, 178824). So the field breakdown has to be captured *during*
-serialization, not after.
+The `h` slots are **per-byte value factories, not containers**. Measured anatomy of a
+slot (frame realm, right after a mint):
+
+```
+ownKeys        ["create", "concat"]
+prototype      not Object.prototype; an object dressed up as a function
+               (propertyIsEnumerable, length, call, splice, prototype, stack, parent, floor)
+create         function(n){ G=(c=(G+=6+7*Y,n), 7+2*(G&-8)-2*(G^7))+(~G&7) }   // returns a NUMBER
+arity          1
+sameCreate     false across slots (each slot closes over its own G/Y state)
+```
+
+So a field is never materialised as an array: the writers call `create(n)` once per
+byte, push the result straight into the output buffer, and XOR it with the per-sign
+table on the way. At encode time the interesting ids (146, 277, 261, 311, 323, 444,
+473, 474, 495, 117) return `undefined` from `create()` simply because they were
+already drained; 21 and 230 still return numbers (140846, 178824) because they are
+counters, not payloads.
+
+Consequence: the plaintext field breakdown cannot be read after the fact at all. It
+has to be intercepted **while it is generated**, which means hooking the writer
+functions (`ax`, `qj` in the inline build) or wrapping each slot's `create` between
+instance creation and serialization.
 
 ## 3. Where the encode happens
 
@@ -191,11 +209,14 @@ not natives). Full chromium is required.
 
 ## 8. Open questions for the serializer work
 
-1. Capture field writes *during* serialization instead of after: the slots are
-   consumed by the time `btoa` runs, so the hook has to land earlier - e.g. on the
-   first `hq` use, or by tracing the writer functions (`ax`/`qj` in the inline build)
-   from the frame script with `Debugger.setBreakpointByUrl` replaced by a
-   script-id-based breakpoint armed at parse time.
+1. Capture field writes *during* serialization instead of after. Two known-good facts
+   to build on: the VM is **reusable inside one page** (three consecutive mints all
+   returned trusted-length tokens), and each slot's `create` is a per-instance closure,
+   so arming breakpoints on a *previous* instance's factories catches nothing (and
+   disturbed the next mint: token 111). The workable route is a tight poller in the
+   frame realm that wraps the new instance's `h[*].create` as soon as
+   `ridgeslice.a(...)` has produced it, or a breakpoint on the writers themselves
+   (`ax`/`qj`), whose ids are arguments rather than names.
 2. Decode the keystream: `hq` is only 8 bytes but the payload shows no lag-8
    periodicity, so either the key is expanded or the fields are hashed into it.
    Recovering the key schedule would make offline field diffing possible.
