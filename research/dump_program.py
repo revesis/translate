@@ -235,12 +235,15 @@ FIELDS_JS = r"""(async () => {
   const fa = %s;
   const fb = %s;
   const mut = %s;
-  try { delete window.ridgeslice; } catch (e) {}
+  const early = %s;
   let evalErr = null;
-  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
-  const VM = window.ridgeslice;
-  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
-  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
+  if (!early) {
+    try { delete window.ridgeslice; } catch (e) {}
+    try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  }
+  const VM = (early && window.__MINEV) || window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', early: early, evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine', early: early });
   try { delete window.ridgeslice; } catch (e) {}
   const noop = () => {};
   const realms = [];
@@ -286,11 +289,23 @@ FIELDS_JS = r"""(async () => {
   const wrB = collect();
   let meta = {};
   for (const w of realms) { try { if (!meta.V && w.__vmeta) meta = w.__vmeta; } catch (e) {} }
+  const vmDiag = {};
+  try {
+    vmDiag.booted = VM.__booted || 0;
+    vmDiag.vmeta = VM.__vmeta ? 1 : 0;
+    vmDiag.rd = (VM.__rd || []).length;
+    vmDiag.wr = (VM.__wr || []).length;
+    vmDiag.prog = (VM.__prog ? Object.keys(VM.__prog).length : 0);
+    vmDiag.isGlobal = (window.ridgeslice === VM) ? 1 : 0;
+    vmDiag.aCalls = window.__aCalls || 0;
+    vmDiag.aVals = window.__aVals || 0;
+    vmDiag.aLen = (typeof VM.a === 'function') ? String(VM.a).length : -1;
+  } catch (e) { vmDiag.err = String(e); }
   const states = realms.map((w) => {
     try { return { wr: (w.__wr || []).length, rd: (w.__rd || []).length, jy: typeof w.__JY }; }
     catch (e) { return { err: 1 }; }
   });
-  return JSON.stringify({ states: states, tokA: tokA.length, tokB: tokB.length,
+  return JSON.stringify({ vmDiag: vmDiag, states: states, tokA: tokA.length, tokB: tokB.length,
                           tokC: tokC === null ? null : tokC.length, V: meta.V,
                           nu: (meta.prog || []).length, wrA: wrA, wrB: wrB, wrC: wrC });
 })()"""
@@ -343,6 +358,23 @@ WRITERS_JS = r"""(async () => {
   out.push({ k: -2, len: String(after).length, head: String(after).slice(0, 24) });
   return JSON.stringify({ runs: out, realms: realms.length });
 })()"""
+
+
+
+async def read_doc_material(cs, reload_page: bool = False):
+    """(Re)load the page and return the parsed material of the document that is now live."""
+    if reload_page:
+        cs.doc_request = None
+        await cs.send("Page.reload")
+        await asyncio.sleep(7)
+    if not cs.doc_request:
+        raise SystemExit("no document response captured")
+    body = await cs.send("Network.getResponseBody", requestId=cs.doc_request)
+    html = body.get("body", "")
+    if body.get("base64Encoded"):
+        html = base64.b64decode(html).decode("utf-8", "replace")
+    arr = json.loads("[" + (parse_material(html)[4:]))
+    return arr
 
 
 class CS(ChromeSession):
@@ -404,7 +436,7 @@ def parse_material(html: str) -> str:
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
               twice: bool = False, fields: bool = False, same: bool = False,
-              mutate: int | None = None, writers: bool = False) -> None:
+              mutate: int | None = None, writers: bool = False, early: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -440,6 +472,65 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 tag = {-1: "control", -2: "control after"}.get(run["k"], f"kill copy {run['k']}")
                 print(f"  {tag:>14}: token_len={run['len']} head={run['head']!r}")
             return
+        if fields and early:
+            # The page's own bootguard sometimes wins the race for `ridgeslice`, after which the
+            # eval-ed copy is installed but never executed. Inject the patched interpreter at
+            # document start instead, so it claims the name before any page script runs. The
+            # material and the interpreter must be the same build, and the build rotates per
+            # load, so retry until two consecutive loads agree on the unpatched hash.
+            script_id = None
+            orig = None
+            arr = src = info = None
+            for attempt in range(5):
+                arr = await read_doc_material(cs, reload_page=script_id is not None)
+                if script_id is not None and arr[2] == orig:
+                    print(f"attempt {attempt + 1}: build {orig[:16]} matches the injected copy")
+                    break
+                if script_id is not None:
+                    await cs.send("Page.removeScriptToEvaluateOnNewDocument", identifier=script_id)
+                    script_id = None
+                orig = arr[2]
+                src, info = bgpatch.patch(arr[5][-1], blockcache=False, writes=True)
+                print(f"attempt {attempt + 1}: injected patched interpreter for build "
+                      f"{orig[:16]}, reloading")
+                # Clear the name first (the page's own bootguard may have claimed it) and keep
+                # our object under a private name, because whoever writes `window.ridgeslice`
+                # last wins the global - and the page has more chances to write it than we do.
+                injected = ("try{window.ridgeslice=void 0}catch(e){};" + src
+                            + ";window.__MINE=1;window.__MINEV=window.ridgeslice;"
+                            "window.__aCalls=0;window.__aVals=0;"
+                            "(function(){var v=window.__MINEV;if(!v||typeof v.a!==125)try{}catch(e){} })();"
+                            "(function(){var v=window.__MINEV;if(v&&typeof v.a==='function'){var o=v.a;"
+                            "v.a=function(){window.__aCalls++;var r=o.apply(this,arguments);"
+                            "if(r&&typeof r==='object')window.__aVals++;return r;};}})();")
+                r = await cs.send("Page.addScriptToEvaluateOnNewDocument", source=injected)
+                script_id = r.get("identifier")
+            else:
+                raise SystemExit("could not line up two loads on the same build")
+            arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
+            cs.body = src.encode()
+            print("patch:", {k: v for k, v in info.items() if k != "params"})
+            fb = freq if (same or mutate is not None) else (
+                freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
+            d = json.loads(await cs.eval(FIELDS_JS % (
+                json.dumps(arr), json.dumps(src), json.dumps(freq), json.dumps(fb),
+                "null" if mutate is None else str(mutate), "true")))
+            print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
+            print("vm diag:", d.get("vmDiag"), "| realms:", len(d.get("states") or []))
+            a, b = d.get("wrA") or [], d.get("wrB") or []
+            print(f"field writes: A={len(a)} B={len(b)}")
+            if a and b:
+                differ = [(x, y) for x, y in zip(a, b) if x != y]
+                print("positions differing:", len(differ))
+                for x, y in differ[:10]:
+                    print("  A", x[0], x[1], str(x[2])[:60])
+                    print("  B", y[0], y[1], str(y[2])[:60])
+                ids = {}
+                for x in a:
+                    ids.setdefault(x[0], []).append((x[1], len(x[2] or "")))
+                print("distinct field ids written:", len(ids))
+                json.dump(d, open(os.path.join(out, "run_fields_early.json"), "w"))
+            return
         if fields:
             fb = freq if (same or mutate is not None) else (
                 freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
@@ -458,7 +549,7 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 print(f"attempt {attempt + 1}: empty write log, retrying")
                 await asyncio.sleep(2)
             print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
-            print("realm states:", d.get("states"))
+            print("vm diag:", d.get("vmDiag"), "| realms:", len(d.get("states") or []))
             a, b = d.get("wrA") or [], d.get("wrB") or []
             if not a or not b:
                 return
@@ -577,6 +668,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--early", action="store_true",
+                    help="with --fields: inject the patched interpreter at document start")
     ap.add_argument("--writers", action="store_true",
                     help="probe which writer copy is live by aborting each in turn")
     ap.add_argument("--mutate", type=int, default=None,
@@ -592,7 +685,7 @@ def main() -> None:
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same,
-                    a.mutate, a.writers))
+                    a.mutate, a.writers, a.early))
 
 
 if __name__ == "__main__":

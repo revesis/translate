@@ -132,7 +132,8 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # `window.__mut = N` flips plaintext byte N (the array is decrypted per read, so
         # flipping the stored byte flips what the reader returns).
         boot_new = (boot_old + ",(window.__mut!=null&&(" + seed_vm + "." + prog_field
-                    + "[window.__mut]^=1)),window.__vmref=" + seed_vm + ",window.__JY=" + name
+                    + "[window.__mut]^=1))," + seed_vm + ".__booted=1,window.__vmref=" + seed_vm
+                    + ",window.__JY=" + name
                     + ",window.__vmeta={V:" + seed_vm + "." + vfield + ",prog:" + seed_vm + "."
                     + prog_field + ",seed:" + seed_vm + ".l"
                     + ((",fd:" + seed_vm + "." + fd_name) if fd_name else "") + "}")

@@ -950,3 +950,42 @@ three times.
 Practical rule for the research line: **one page load, one attempt, retry the load** - do not trust
 an empty capture, and never compare two dumps that came from different loads (the program itself
 is per-load, section 15).
+
+## 23. Early injection: installed and called, still not instrumented
+
+The load-time race hypothesis was: the page's own bootguard claims `ridgeslice` first, so the
+eval-ed copy is installed but never executed. The fix tried was `Page.addScriptToEvaluateOnNewDocument`
+with the patched source, so it runs at document start, plus:
+
+* the name is cleared first (`window.ridgeslice = void 0`) so the interpreter builds a **fresh**
+  object instead of reusing the page's (which would skip `a = R` because `m > 40`);
+* the object is kept under a private name (`__MINEV`) because whoever writes the global last wins,
+  and the page gets more chances to write it than we do;
+* `__MINE` at the end of the source proves the text ran;
+* two consecutive loads must agree on the unpatched interpreter hash, because the build rotates
+  per load (`--early` reloads until it does).
+
+Measured (Fhxs build, 3 writer copies, 5 realms visible):
+
+```
+attempt 1: injected patched interpreter for build FhxsKBPKEL3Q_7SA, reloading
+attempt 2: build FhxsKBPKEL3Q_7SA matches the injected copy
+vmDiag: {booted: 0, vmeta: 0, rd: 0, wr: 0, prog: 0, isGlobal: 0, aCalls: 2, aVals: 2, aLen: 112}
+tokA: 763   tokB: 611   nu: 0
+field writes: A=0  B=0
+```
+
+`aCalls: 2` is the decisive line: the VM entry we call *is* the one from our object (called twice,
+one per mint, both returning values), and the object is ours (`__MINE`), yet the patched boot site
+never executes (`__booted` stays 0), no reader hit is recorded and no field write lands.
+
+So the failure is not a load-order race at all. **The code that boots the instance is not the text
+we patched, even though the entry point we call is.** In these builds the visible interpreter text
+contains the inner program as a string (`.join('\n')` then compiled), and patching inside that
+string is silent: injecting an invalid token there leaves `node --check` happy because it is string
+content. The next experiment is therefore precise: patch the string element that carries the boot
+site, verify with `__booted`, and only then claim the inner pipeline is instrumented.
+
+Until then: `--fields` without `--early` still works on some loads (sections 20 and 22), `--early`
+does not work, and the corpus run over several payload lengths is on hold because the capture has
+to be stable first.
