@@ -62,6 +62,30 @@ def brace_end(s: str, i: int) -> int:
     raise SystemExit("unbalanced braces")
 
 
+def in_string(s: str, i: int) -> bool:
+    """True when s[i] sits inside a '...' / "..." / `...` literal.
+
+    Part of the interpreter text is itself the source of the inner program (it is assembled as
+    a string and compiled at runtime), so a patch anchor can land inside code that only exists
+    after that compile. Text injected there must be valid *inner* JS, and the anchor check has
+    to know the difference.
+    """
+    quote = None
+    j = 0
+    while j < i:
+        c = s[j]
+        if quote:
+            if c == "\\":
+                j += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "'\"`":
+            quote = c
+        j += 1
+    return quote is not None
+
+
 def split_top(expr: str) -> list:
     """Split a JS expression on top-level commas (parentheses only)."""
     parts, depth, cur = [], 0, ""
@@ -92,7 +116,8 @@ def find_name(s: str, upto: int, vm: str):
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
-          writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False):
+          writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
+          loop=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -339,6 +364,34 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     else:
         info_post = {}
 
+    if loop:
+        # The interpreter's instruction loop fetches the program pointer once per instruction:
+        #   for(...;--J;)try{ if(F.o)...; else { if((P=z(PTR,VM),P)>=L)break; ... } }
+        # One instruction is one iteration, so logging the fetched pointer gives the exact
+        # instruction boundary without breakpoints; the token stream then segments by itself.
+        # Last hunk on purpose: it inserts in the middle of the text, and every earlier hunk
+        # uses offsets into the pre-patch string (a stale `r["start"]` slices the wrong span).
+        ptr_id = re.search(r"\d+", r["call"]).group(0)
+        hits = [m for m in re.finditer(r"\b(\w+)=(\w+)\(" + ptr_id + r",(\w+)\)", src)
+                if "--" in src[max(0, m.start() - 300):m.start()]
+                and len(src[max(0, m.start() - 300):m.start()].rsplit("--", 1)[-1]) < 120]
+        if not hits:
+            raise SystemExit("instruction loop not found")
+        m = hits[0]
+        lv, vm_l = m.group(1), m.group(3)
+        # `,(expr)` and not `,expr)`: on the builds that keep the instruction loop in the inner
+        # program text the injected code is compiled at runtime, and a missing paren turns the
+        # whole token into the VM's `FNLSyntaxError: Unexpected token '.'` answer.
+        # `,(expr)` with no trailing paren: the fetch sits in one of two shapes -
+        # `if(A=f(PTR,V),A>=L)` and `if((A=f(PTR,V),A)>=L)` - and only this form is valid in
+        # both. (A stray paren here is compiled at runtime and comes back as FNLSyntaxError.)
+        inject = (",(" + vm_l + ".__ip=" + vm_l + ".__ip||[]).push(" + lv + ")")
+        src = src[:m.end()] + inject + src[m.end():]
+        info_loop = {"loop_sites": len(hits), "loop": m.group(0), "ip_log": vm_l + ".__ip",
+                     "inner_text": in_string(src, m.start())}
+    else:
+        info_loop = {}
+
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is
     # indistinguishable from "nothing to log".
@@ -350,5 +403,6 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     info.update(info_writer)
     info.update(info_canary)
     info.update(info_kinds)
+    info.update(info_loop)
     info.update(info_post)
     return src, info

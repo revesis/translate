@@ -99,6 +99,29 @@ JS = r"""(async () => {
                           nu: (meta.prog || []).length, seed: meta.seed,
                           nblocks: blocks.length, blocks: blocks,
                           sweep: st.dump, sweepErr: String(found.__sweepErr || ''),
+                          ip: (found.__vmref && found.__vmref.__ip) || [],
+                          tab: (function () {
+                            // one row per field-table slot: the id, its own keys, and what the
+                            // `prototype`/`value` members hold - an instruction's opcode is the id
+                            // whose slot carries the handler, so this dumps the instruction set
+                            const out = [];
+                            const S = (f) => { try { return f(); } catch (q) { return null; } };
+                            try {
+                              const vm = found.__vmref, h = (vm && vm.h) || {};
+                              for (const k of Object.keys(h)) {
+                                const e = h[k];
+                                const p = S(() => e.prototype);
+                                out.push([+k,
+                                  S(() => Object.keys(e).join(",")),
+                                  S(() => typeof p),
+                                  S(() => typeof e.value),
+                                  S(() => String(p).slice(0, 200)),
+                                  S(() => Object.keys(p).join(",")),
+                                  S(() => String(p.constructor).slice(0, 120))]);
+                              }
+                            } catch (e) {}
+                            return out;
+                          })(),
                           log: st.rd, vals: st.rv });
 })()"""
 
@@ -145,6 +168,51 @@ def validate(buf: bytearray, log: list, vals: list, known: bytearray | None = No
     return {"match": ok, "mismatch": bad, "skipped_plaintext": skipped,
             "uncovered_reads": uncovered, "malformed_entries": malformed,
             "first_mismatch": first}
+
+
+MINT_JS = r"""(async () => {
+  const arr = %s;
+  if (typeof window.ridgeslice === 'undefined') { (0, eval)(%s); }
+  const noop = () => {};
+  const api = await new Promise((res, rej) => {
+    try { window.ridgeslice.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+    catch (e) { rej(e); }
+  });
+  const token = await new Promise((res) => api[0]((t) => res(String(t)), [%s, undefined, undefined, undefined]));
+  return JSON.stringify({token: String(token).length, head: String(token).slice(0, 32)});
+})()"""
+
+
+FRAME_ANCHORS = ("__ip", "z(230", "x(44", "G(339", "NU[", "cF[", "x9[", "sourceMappingURL")
+
+
+async def dump_frame_scripts(cs, arr, plain: str, out: str) -> None:
+    """Mint once with the pristine interpreter, then dump every compiled script >= 4 KB."""
+    import json as _json
+    freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
+        os.path.join(HERE, "freq.txt")) else "hello"
+    res = _json.loads(await cs.eval(MINT_JS % (json.dumps(arr), json.dumps(plain),
+                                               json.dumps(freq))))
+    print("pristine mint:", res)
+    print(f"compiled scripts: {len(cs.scripts)}")
+    rows = []
+    for sid in cs.script_order:
+        meta = cs.scripts.get(sid) or {}
+        if (meta.get("len") or 0) < 4000:
+            continue
+        try:
+            src = (await cs.send("Debugger.getScriptSource", scriptId=sid)).get("scriptSource", "")
+        except Exception as e:
+            print(f"  {sid}: source unavailable ({e})")
+            continue
+        open(os.path.join(out, f"script_{sid}.js"), "w").write(src)
+        hits = {k: src.count(k) for k in FRAME_ANCHORS if src.count(k)}
+        rows.append((sid, meta.get("len"), len(src), meta.get("ctx"), meta.get("url", "")))
+        print(f"  {sid}: reported {meta.get('len')} src {len(src)} ctx {meta.get('ctx')} "
+              f"url {meta.get('url', '')[:50]!r}")
+        print(f"      anchors {hits}")
+    json.dump({"build": arr[2], "interp": len(plain), "scripts": rows},
+              open(os.path.join(out, "scripts.json"), "w"), indent=1)
 
 
 AB_JS = r"""(async () => {
@@ -452,6 +520,10 @@ class CS(ChromeSession):
         self.doc_request = None
         self.body: bytes = b""
         self.served: list = []
+        # every compiled script the debugger reports; the VM's real code is one of these and
+        # does not live in the page realm (section 24), so this is the only way to see it
+        self.scripts: dict = {}
+        self.script_order: list = []
 
     async def send(self, method, **params):
         self._id += 1
@@ -486,6 +558,12 @@ class CS(ChromeSession):
                                         body=base64.b64encode(self.body).decode())
                     else:
                         await self.send("Fetch.continueRequest", requestId=p["requestId"])
+                elif msg.get("method") == "Debugger.scriptParsed":
+                    p = msg["params"]
+                    self.scripts[p.get("scriptId")] = {
+                        "url": p.get("url", ""), "len": p.get("length", 0),
+                        "ctx": p.get("executionContextId")}
+                    self.script_order.append(p.get("scriptId"))
                 elif msg.get("method") == "Network.responseReceived":
                     p = msg["params"]
                     if p.get("type") == "Document" and self.doc_request is None:
@@ -505,7 +583,8 @@ def parse_material(html: str) -> str:
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
               twice: bool = False, fields: bool = False, same: bool = False,
-              mutate: int | None = None, writers: bool = False, early: bool = False) -> None:
+              mutate: int | None = None, writers: bool = False, early: bool = False,
+              loop: bool = False, frame_scripts: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -513,6 +592,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
     try:
         await cs.send("Network.enable")
         await cs.send("Fetch.enable", patterns=[{"urlPattern": "*js/bg/*", "requestStage": "Request"}])
+        if frame_scripts:
+            await cs.send("Debugger.enable")
         await cs.navigate(URL, settle=7)
         if not cs.doc_request:
             raise SystemExit("no document response captured")
@@ -530,14 +611,20 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         open(os.path.join(out, "blob_" + tag + ".txt"), "w").write(arr[0])
         print(f"served /js/bg requests: {len([u for u in cs.served if '/js/bg/' in u])}")
         print(f"build: hash={arr[2]} blob={len(arr[0])} interp={len(plain)} ts={arr[4]}")
+        if frame_scripts:
+            await dump_frame_scripts(cs, arr, plain, out)
+            return
         if writers:
             src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, killswitch=True)
         else:
             src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab or fields),
-                                      sweep=sweep or ab, writes=fields)
+                                      sweep=sweep or ab, writes=fields, loop=loop)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         cs.body = src.encode()
         print("patch:", {k: v for k, v in info.items() if k != "params"})
+        if frame_scripts:
+            await dump_frame_scripts(cs, arr, plain, out)
+            return
         if writers:
             n = int(info.get("writers_patched") or 0)
             d = json.loads(await cs.eval(WRITERS_JS % (json.dumps(arr), json.dumps(src),
@@ -725,14 +812,29 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         print({k: v for k, v in d.items() if k not in ("blocks", "sweep", "log", "vals")})
         nbytes = d.get("nu") or 0
         if log_only:
+            raw = d.get("log") or []
+            reads = [e for e in raw if isinstance(e, list) and len(e) == 3
+                     and all(isinstance(x, (int, float, bool)) for x in e)]
             blockhit = set()
-            for entry in d.get("log") or []:
+            for entry in reads:
                 cnt, start = int(entry[0]), int(entry[2])
                 for b in range(start // 64, (start + cnt - 1) // 64 + 1):
                     blockhit.add(b)
             total = (nbytes + 7) // 8
-            print(f"log-only: reads={len(d.get('log') or [])} blocks touched={len(blockhit)}"
-                  f"/{total} ({round(len(blockhit) / max(total, 1), 4)})")
+            ip = [x for x in (d.get("ip") or []) if isinstance(x, (int, float))]
+            rows = d.get("tab") or []
+            tab = {int(t[0]): t for t in rows if isinstance(t, list) and t}
+            ptypes = {}
+            for v in tab.values():
+                ptypes[v[2] if len(v) > 2 else "?"] = ptypes.get(v[2] if len(v) > 2 else "?", 0) + 1
+            print(f"field table: {len(tab)} ids, prototype types {ptypes}")
+            for v in rows[:3]:
+                print("   sample", v)
+            print(f"log-only: reads={len(reads)} (malformed {len(raw) - len(reads)})"
+                  f" blocks touched={len(blockhit)}/{total}"
+                  f" ({round(len(blockhit) / max(total, 1), 4)})"
+                  f"  instructions={len(ip)} distinct_ips={len(set(ip))}"
+                  f" monotone={ip == sorted(ip)}")
             json.dump({"build": {"hash": arr[2], "blob": len(arr[0]), "interp": len(plain)},
                        "info": info, "run": d},
                       open(os.path.join(out, "run_log.json"), "w"))
@@ -776,6 +878,10 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--frame-scripts", action="store_true",
+                    help="mint with the pristine interpreter and dump every compiled script")
+    ap.add_argument("--loop", action="store_true",
+                    help="log the instruction-loop pointer, i.e. one entry per executed instruction")
     ap.add_argument("--early", action="store_true",
                     help="with --fields: inject the patched interpreter at document start")
     ap.add_argument("--writers", action="store_true",
@@ -793,7 +899,7 @@ def main() -> None:
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same,
-                    a.mutate, a.writers, a.early))
+                    a.mutate, a.writers, a.early, a.loop, a.frame_scripts))
 
 
 if __name__ == "__main__":

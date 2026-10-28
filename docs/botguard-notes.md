@@ -1195,3 +1195,135 @@ at the operand boundaries the wrapper implies (an 8-bit value, an extended 9-bit
 which gives a typed stream without needing the dispatch table; (3) only then look for the
 dispatch - the `cH`-style tracing of section 10 is the fallback if the stream turns out to be
 interpreted out of order after all.
+
+## 26. The frame's program is readable and patchable, and the loop gives instruction boundaries
+
+Section 24 stopped at "the frame realm is unreachable". Two instruments close that: the debugger
+reads the compiled program, and one injection into it yields one log entry per executed
+instruction.
+
+### The compiled program, straight from the debugger
+
+`Debugger.enable` before navigation, then a pristine mint (no patch at all, token 1433 chars in
+the trusted range), then `Debugger.getScriptSource` for every script over 4 KB:
+
+```
+compiled scripts: 292
+  script 21: 66505 chars  ctx 1  url ''            <- the interpreter text we get from the page
+  script 37: 63772 chars  ctx 2  url ''            <- the program, in the frame realm
+      anchors: z(230 x1   NU[ x1   sourceMappingURL x1
+  script 20: 166862 chars ctx 1  url ''   (another copy, page realm)
+```
+
+Script 37 is the thing that actually runs: it contains the reader `JY`, the writer `D`, the
+dispatcher `T6` (`switch(!(G==NQ)){... G==E4 ... G==az`), and the instruction loop `eT`. It is the
+big string chunk of the page's interpreter text joined with the wrapper chunks
+(`'(function(){/*'`, the licence comment, the closing `}\');'`) plus a prefix of random newlines
+(`Array(Math.random()*7824|0).join('\n')`), which is why its length never matches the chunk.
+
+New mode: `python3 research/dump_program.py --frame-scripts --port 10270 --out /tmp/bg-scripts`.
+Script ids and offsets rotate per load, so nothing may be hard-coded - search the dumped source.
+
+### The inner text is patchable, once two patcher bugs are out of the way
+
+Instrumenting `eT` inside that text works. The first attempts died with the VM's own
+`FNLSyntaxError`, and both causes are worth recording:
+
+* **the loop hunk must run last.** It inserts text in the middle of the source, and the reader /
+  writer / boot hunks locate their spans *before* that happens (`r["start"]` from an earlier
+  `find_reader` call), so a stale offset slices the wrong span and the replacement is garbage.
+  Each hunk alone produced valid text; only the combination broke, which is what pointed at
+  ordering rather than at the injection itself.
+* **the injected expression needs the surrounding shape.** The fetch appears as
+  `if(A=f(PTR,V),A>=L)` on one build and `if((A=f(PTR,V),A)>=L)` on another; only
+  `,(expr)` with no trailing paren (i.e. `,((VM.__ip=VM.__ip||[]).push(A))`) is valid in both. A
+  stray paren is compiled at runtime and comes back as the token `FNLSyntaxError: ...`.
+
+The `loop` hunk logs the fetched pointer once per iteration; the pointer field is 230 / 339 / 44
+depending on the build, and the fetch site is found as `NAME=GETTER(PTR,VM)` preceded by a
+`--STEP;` loop counter, not by name.
+
+Measured, one run per build (log-only, real payload, loop hunk on):
+
+```
+reads 10896  instructions 1084  distinct pointers 646   (Fhxs, token 1045)
+reads  5242  instructions  993  distinct pointers 560   (pBm,  token  ~900)
+reads 15815  instructions  938  distinct pointers 513   (EON,  token  848, 517 field writes)
+```
+
+Fewer distinct pointers than instructions is the program looping, which is expected; the pointer
+sequence is not monotone and that is a fact about the program, not noise.
+
+### Segmenting the read stream by those boundaries
+
+Instruction `k` owns the reads between boundary `k` and `k+1` (map the boundary into the read log
+chronologically, so loops and repeats resolve correctly). Token arity over 1071 boundaries:
+
+```
+tokens per instruction: 3 x319, 1 x230, 4 x187, 5 x92, 6 x67, 8 x60, 2 x58, 7 x25, 9 x7, 11 x4
+```
+
+and per leading token, the arity is often fixed:
+
+```
+leading token  n    arity         leading token  n    arity
+          418  58   2 (58/58)              96  25   4 (25/25)
+          412  58   4 (58/58)             121  21   3 (21/21)
+           82  29   3 (29/29)              18  49   4 (47/49)
+           89 125   3 (124/125)           48  74   3 (73/74)
+```
+
+while others vary in a way that looks data-carrying (`288`: 5 or 8, `104`: 4 or 5, `28`: 5 or 6)
+- a bytecode with inline operands whose length depends on the data, not a fixed-width encoding.
+
+### What the leading token is not (negative result)
+
+The obvious reading - "leading token = opcode, i.e. the field id whose slot holds the handler,
+because the loop does `Y = z(B(F,37), F)`" - does not survive the write log. Joining the write log
+to the same run (`wr[i][3]` is the number of reads completed when the write happened) gives the
+fields each leading token writes:
+
+```
+288 (139x) writes 101 (124), 107 (63), 85 (31)      <- not one target
+ 89 (125x) writes  85 (59),  88 (32), 59 (31)
+104 (121x) writes 107 (40),  88 (27), 66 (1)
+418  (58x) writes  88 (31)
+```
+
+So either the handler takes its target field as an operand, or a segment mixes two loop levels.
+Cheapest way to separate the two: log a depth counter alongside the pointer (increment on `eT`
+entry, decrement on exit) and re-run the same join. Until that is measured, treat the leading
+token as "handler id, target may be an operand".
+
+The field table cannot answer it after the fact: a post-mint walk of `vm.h` reports 137 slots, all
+with own keys `create,concat`, `prototype === undefined`, `value === undefined` - the slots are
+drained by the run (section 2), so the handler has to be captured *while* it is live.
+
+### The program opens with a string table, not with code
+
+The first boundary (bit 32, right after the 32-bit seed) owns 166 tokens, and their values are
+ASCII bytes:
+
+```
+... -divprotectcache_ 1l."..CA.B..Wy3.Y.S....G5'&k@.Z>..|#.LgT}..C.Es+xPF..H...)m ..
+```
+
+so the region after the seed is a table of names (`divprotectcache_…`) with a few binary fields
+mixed in, and the instruction stream proper starts at bit 1362 on that run. That is consistent
+with section 11's readable fragments and with section 19's high entropy on the EON build: the
+*header* is text, the *payload* regions are not.
+
+### Instruments added this round
+
+```
+--frame-scripts   pristine mint + dump every compiled script >= 4 KB, with anchor counts
+--loop            log the instruction-loop pointer (one entry per executed instruction)
+                  (also carried through --log-only, which now reports instruction counts)
+research/read_records.py   tokenise a read log and print the token range behind each write
+```
+
+Next, in order: (1) depth counter on the loop, to separate nested levels before anything else is
+concluded from segments; (2) capture a handler while it is live - the field slot is drained after
+the mint, so this needs a poller or a breakpoint, not a post-mortem walk; (3) re-run the
+op-to-effect join with both of those in place, which is the point where an instruction table
+becomes a table instead of a guess.
