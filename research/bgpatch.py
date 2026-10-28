@@ -31,7 +31,7 @@ objects - the caller must scan every realm for it.
 import re
 
 READER_ANCHOR = re.compile(
-    r"if\(\((\w+)=(\w+)\(([^()]*)\),\1\)>=(\w+)\.(\w+)\)throw\[(\w+),31\];")
+    r"if\(\(?(\w+)=(\w+)\(([^()]*)\),\1\)?>=(\w+)\.(\w+)\)throw\[(\w+),31\];")
 BOOT_ANCHOR = re.compile(
     r"(\w+)\.(\w+)=\w+\([^;]{0,80}?atob\(([^)]*)\)\)+,\1\.(\w+)=\1\.\2\.length"
     r"(?:<<3|\*8),(\w+)\(([^)]*),\[0,0,0\]\)")
@@ -48,34 +48,76 @@ def find_reader(s: str) -> dict:
             "vm": vm, "vfld": vfld, "arr": arr}
 
 
+def brace_end(s: str, i: int) -> int:
+    """Index just past the `}` closing the block that opens at s[i]."""
+    depth = 0
+    while i < len(s):
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise SystemExit("unbalanced braces")
+
+
+def split_top(expr: str) -> list:
+    """Split a JS expression on top-level commas (parentheses only)."""
+    parts, depth, cur = [], 0, ""
+    for ch in expr:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
 def find_name(s: str, upto: int, vm: str):
-    """Name and parameter list of the reader: last `NAME=function(...){` taking the vm."""
+    """Name, params and body span of the reader: the last `NAME=function(...){` taking the vm."""
     best = None
     for m in re.finditer(r"([\w$]+)=function\(([^)]*)\)\{", s[:upto]):
         params = [p.strip() for p in m.group(2).split(",")]
         if vm in params:
-            best = (m.group(1), params)
+            best = (m.group(1), params, m.end() - 1)
     if not best:
         raise SystemExit("reader name not found")
-    return best
+    return best[0], best[1], best[2], brace_end(s, best[2])
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
-          writes=False, killswitch=False, sink=None, canary=False, post=False):
+          writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
     S = sink or "window"
     r = find_reader(src)
-    name, params = find_name(src, r["start"], r["vm"])
+    name, params, bstart, bend = find_name(src, r["start"], r["vm"])
+    body = src[bstart:bend]
     seg = src[r["start"]:r["start"] + 2600]
-    mflag = re.search(r"\b(\w+)&&\(", seg)
+    mflag = re.search(r"\b(\w+)&&\(", body)
     if not mflag:
         raise SystemExit("keystream guard not found")
     flag_name = mflag.group(1)
-    bits_name = next((p for p in params[:2] if p != flag_name), "")
-    if flag_name not in params[:2] or not bits_name:
-        raise SystemExit("cannot tell bits from flag: " + str(params[:2]))
+    # the bit count is the parameter the loop seed copies into the loop counter. Two shapes seen:
+    #   for(y=(d=(I=(b=0,BITS),X),...);I>0;)      I=(b=0,BITS)
+    #   for(m=(C=r,(v=BITS,d).TU).length,...;v>0;) v=BITS
+    bits_name = ""
+    mcond = re.search(r";(\w+)>0;", body)
+    if mcond:
+        lv = mcond.group(1)
+        minit = (re.search(r"\b" + lv + r"=\(\w+=\d+,(\w+)\)", body)
+                 or re.search(r"\b" + lv + r"=(\w+)[,)]", body))
+        if minit and minit.group(1) in params:
+            bits_name = minit.group(1)
+    if flag_name not in params or not bits_name or bits_name == flag_name:
+        raise SystemExit("cannot tell bits from flag: " + str(params[:4]))
 
     b = BOOT_ANCHOR.search(src)
     if not b:
@@ -87,42 +129,50 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     if not seed_id:
         raise SystemExit("seed field id not found in " + seed_call + "(" + b.group(6) + ")")
 
-    mc = re.search(r"\.(\w+)!=\w+>>6", seg)
+    mc = re.search(r"\.(\w+)!=\w+>>6", body)
     cache_field = mc.group(1) if mc else ""
-    read_args = "8,true," if params[0] == bits_name else "true,8,"
+    # build the reader's argument list by role instead of by position: builds have shipped
+    # (bits, flag, vm), (flag, bits, vm) and (vm, flag, bits).
+    role = {bits_name: "8", flag_name: "true", r["vm"]: "v"}
+    head = params[:3]
+    if sorted(role) != sorted(head):
+        raise SystemExit("unexpected reader head params: " + str(head))
+    read_args = ",".join(role[p] for p in head) + ","
 
     if entry:
         entry_old = src[r["start"]:r["end"]]
+        # the log lives on the VM instance, not on `window`: the writer hook runs in the same
+        # scope as the reader hook, so instance-scoped logs stay aligned with each other even
+        # when the text is evaluated in more than one realm.
         entry_new = ("if((" + r["ptr"] + "=(" + S + ".__fp!=null&&" + S + ".__fpv===" + r["vm"]
-                     + ")?" + S + ".__fp:" + r["call"] + "," + r["ptr"] + ")>=" + r["vm"] + "."
+                     + "?" + S + ".__fp:" + r["call"] + ")," + r["ptr"] + ")>=" + r["vm"] + "."
                      + r["vfld"] + ")throw[" + r["arr"] + ",31];"
-                     + S + ".__fp==null&&(" + S + ".__rd=" + S + ".__rd||[]).push(["
+                     + "!" + S + ".__lock&&(" + r["vm"] + ".__rd=" + r["vm"] + ".__rd||[]).push(["
                      + bits_name + "," + flag_name + "," + r["ptr"] + "]);")
         src = src.replace(entry_old, entry_new, 1)
 
     if ret:
-        m_id = re.search(r"\d+", r["call"])
-        if not m_id:
-            raise SystemExit("pointer field id not found in " + r["call"])
-        ptr_id = m_id.group(0)
-        seg = src[r["start"]:r["start"] + 2600]
-        mret = None
-        for m in re.finditer(r"return (\w+)\(" + ptr_id + r",[^}]*?,(\w+)\}", seg):
-            mret = m
-        if not mret:
+        # The reader's tail is `return CALL, VALUE}` in every build seen so far, but the call's
+        # shape moves (the pointer field id may be the first or the second argument), so the
+        # value is taken as the last top-level comma element instead of by pattern.
+        j = body.rfind("return ")
+        if j < 0 or not body.endswith("}"):
             raise SystemExit("reader return not found")
-        ret_old = mret.group(0)
-        retvar = mret.group(2)
-        tail = "," + retvar + "}"
-        if not ret_old.endswith(tail):
-            raise SystemExit("unexpected reader return tail: " + ret_old)
+        expr = body[j + len("return "):-1].strip()
+        parts = split_top(expr)
+        if len(parts) < 2:
+            raise SystemExit("unexpected reader return: " + expr)
+        retvar = parts[-1].strip()
+        ret_old = "return " + expr + "}"
+        if src.count(ret_old) != 1:
+            raise SystemExit("reader return not unique (" + str(src.count(ret_old)) + "): " + ret_old[:80])
         pre = ""
         if blockcache and cache_field:
             pre = ("(" + S + ".__r!==" + r["vm"] + "." + cache_field + "&&(" + S + ".__r="
                    + r["vm"] + "." + cache_field + "," + S + ".__blk(" + r["vm"] + "."
                    + cache_field + "," + r["vm"] + "))),")
-        ret_new = (ret_old[:-len(tail)] + "," + pre
-                   + "(" + S + ".__fp==null&&(" + S + ".__rv=" + S + ".__rv||[]).push(["
+        ret_new = ("return " + ",".join(parts[:-1]) + "," + pre
+                   + "(!" + S + ".__lock&&(" + r["vm"] + ".__rv=" + r["vm"] + ".__rv||[]).push(["
                    + bits_name + "," + retvar + "]))," + retvar + "}")
         src = src.replace(ret_old, ret_new, 1)
 
@@ -143,11 +193,15 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                     + prog_field + ",seed:" + seed_vm + ".l"
                     + ((",fd:" + seed_vm + "." + fd_name) if fd_name else "") + "}")
         if blockcache and cache_field:
+            # `__lock` (not `__fp`) guards logging: the capture recurses through the reader's
+            # own return hook, and the nested call clears `__fp`, which used to let the forced
+            # reads through into the log (they then "validate" the buffer they produced).
             boot_new += ("," + S + ".__prog=" + S + ".__prog||{}," + S + ".__blk=function(n,v){"
-                         "if(n==null)return;var i,q;" + S + ".__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;"
-                         + S + ".__fp=q;" + S + ".__prog[n]=" + S + ".__prog[n]||[];"
+                         "if(n==null||" + S + ".__lock)return;" + S + ".__lock=1;var i,q;"
+                         + S + ".__fpv=v;for(i=0;i<8;i++){q=n*64+i*8;" + S + ".__fp=q;"
+                         + S + ".__prog[n]=" + S + ".__prog[n]||[];"
                          + S + ".__prog[n][i]=" + S + ".__JY(" + read_args + "v);}"
-                         + S + ".__fp=null;" + S + ".__fpv=null;}")
+                         + S + ".__fp=null;" + S + ".__fpv=null;" + S + ".__lock=0;}")
         if sweep:
             boot_new += (",window.__sweep=function(){var v=window.__vmref,o=[],p;"
                          "window.__fpv=v;try{for(p=0;p<v." + vfield + ";p+=8){window.__fp=p;"
@@ -179,8 +233,18 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                 continue
             f, params_w = fn
             val = params_w[2]
-            push = ("[" + fid + ",(" + val + "&&" + val + ".length)|0,(function(x){try{return "
-                    "JSON.stringify(x)}catch(e){return String(x)}})(" + val + ")]")
+            # The vm is the parameter that holds the field table (`VM.l[id]` / `VM.h[id]`), not
+            # necessarily the second one: a build ships copies with (vm, id, value) *and*
+            # (id, vm, value). Logging on the wrong one throws inside a live writer and takes
+            # the whole patched VM down (the page then falls back to its pristine copy).
+            wend = brace_end(src, f.end() - 1)
+            wbody = src[f.end():wend]
+            mv = next((m for m in re.finditer(r"\b(\w+)\.\w+\[", wbody)
+                       if m.group(1) in params_w), None)
+            vmp = mv.group(1) if mv else params_w[1]
+            push = ("[" + fid + ",(" + val + "&&" + val + ".length)|0,(function(q){try{return "
+                    "JSON.stringify(q)}catch(e){return String(q)}})(" + val + "),(" + vmp
+                    + ".__rv||[]).length]")
             if killswitch:
                 # self-identifying probe: copy #k aborts the run when window.__kill === k, so
                 # the live copy can be found from the token alone (no cross-realm state).
@@ -189,7 +253,6 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                 # log on the VM instance, not on `window`: the patched text runs in a realm
                 # the page may not be able to enumerate, but the VM object is shared by
                 # reference, so the log is reachable from whichever realm holds `__vmref`.
-                vmp = params_w[1]
                 inject = (vmp + ".__wr=" + vmp + ".__wr||[],(" + fid + "!==" + id_ptr + "&&"
                           + fid + "!==" + id_cat + ")&&" + vmp + ".__wr.push(" + push + ");")
             k += 1
@@ -217,6 +280,45 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         info_canary = {"entry": entry_name, "entry_defs_patched": n_defs}
     else:
         info_canary = {}
+
+    if kinds:
+        # Every 8-bit read goes through one of a few thin wrappers, and the wrapper's "kind"
+        # argument decides how the bytes are decoded (escape, varint, plain). The kind is a
+        # constant at each call site, so tagging the wrapper entry turns a bare value stream
+        # into typed operands: tag,kind interleaved with the read log by call order.
+        wraps = {}
+        for m in re.finditer(r"\b" + re.escape(name) + r"\(([^()]*)\)", src):
+            args = [a.strip() for a in m.group(1).split(",")]
+            if "8" not in args or not any(a in ("true", "!0", "1") for a in args):
+                continue
+            vmarg = next((a for a in args if a not in ("8", "2", "32", "true", "false", "!0", "1")), "")
+            if not vmarg:
+                continue
+            fn = None
+            for f in re.finditer(r"([\w$]+)=function\(([^)]*)\)\{", src[:m.start()]):
+                fn = (f, [p.strip() for p in f.group(2).split(",")])
+            if not fn:
+                continue
+            f, params_f = fn
+            if f.start() not in wraps:
+                # log the first two parameters raw: which one is the kind is a per-build
+                # detail (the vm may be a local alias, not a parameter), and both are small
+                # integers, so the tag is enough to separate the wrapper.
+                wraps[f.start()] = (f, params_f, params_f[:2])
+        patched = {}
+        order = sorted(wraps.items(), key=lambda kv: kv[0])
+        for tag, (_, (f, params_f, kindp)) in enumerate(order):
+            inject = ("(window.__wk=window.__wk||[]).push([" + str(tag)
+                      + "".join("," + p + "|0" for p in kindp) + "]);")
+            if inject in src[f.end():f.end() + 200]:
+                continue
+            src = src[:f.end()] + inject + src[f.end():]
+            patched[f.group(1)] = {"tag": tag, "params": params_f, "logged": kindp}
+        if not patched:
+            raise SystemExit("no value-reader wrapper found")
+        info_kinds = {"wrappers": patched}
+    else:
+        info_kinds = {}
 
     if post:
         # The realm that does the work is a frame the page cannot read, so hand the state over
@@ -247,5 +349,6 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             "seed_field": seed_id, "seed_call": seed_call}
     info.update(info_writer)
     info.update(info_canary)
+    info.update(info_kinds)
     info.update(info_post)
     return src, info

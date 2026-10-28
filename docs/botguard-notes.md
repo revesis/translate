@@ -1032,3 +1032,166 @@ the reader/writer hooks (batched, e.g. every N entries plus once at the end of t
 Until that exists, the rule from section 22 stands: `--fields` with `sink=window` works on some
 loads (sections 20/22), `--early` with the top sink does not, and the payload-corpus and mutation
 sweep items stay blocked behind a stable capture.
+
+## 25. A fourth build family, and the instruments that finally read it
+
+The build rotated again (`pBmIPB2A48cBn4jKyOYwFBBd99dEifKv9scgd1q6IH4`, interpreter 66398) and
+every anchor in `research/bgpatch.py` failed on it: the reader entry lost its extra parentheses
+and the parameter order changed for the third time. Everything below was measured after making
+the patcher role-based instead of position-based.
+
+### Roles are stable, positions are not (four builds)
+
+| role | Fhxs `KBPKEL3Q_` | EON `wmJdvD0_` | pBm `IPB2A48c` |
+| --- | --- | --- | --- |
+| reader | `JY(bits, flag, vm)` | `xG(flag, bits, vm)` | `RE(vm, flag, bits)` |
+| program field | `NU` | `x9` | `cF` |
+| program length (bits) | `V` | `U` | `j` |
+| bit-pointer field | 230 | 339 | 44 |
+| concat sink field | 21 | 328 | 71 |
+| seed field | 15 | 43 | 335 |
+| block keystream cache | `R` | `v` | `U` |
+| writer copies | 3 | 2 | 2 |
+
+The patcher now derives each of these structurally: the entry check gives the pointer field and
+the vm, the keystream guard `<x>&&(` gives the flag, the loop seed (`I=(b=0,BITS)` or
+`v=BITS`) gives the bit count, and the reader call is rebuilt as `(vm, flag, bits)` in whatever
+order that build declares. Reader returns are split on top-level commas instead of matched by
+pattern (`return CALL, VALUE}` holds, but the call's shape does not).
+
+### The value encoding, finally measured
+
+The interpreter reads the program through a thin wrapper. Its 8-bit branch is:
+
+```js
+L = ((L = JY(8,true,q), L & 128) && (L ^= 128, Z = JY(2,true,q), L = (L << 2) + (Z|0)), L)
+```
+
+so one 8-bit read is a value 0..127, and a byte with bit 7 set is followed by one 2-bit read that
+completes a 9-bit value `((b & 0x7f) << 2) | t` (0..511). Checked on a full run:
+
+```
+reads 13786   widths {8: 12739, 2: 1042, 32: 5}   flag-off reads 5 (all 32-bit)
+2-bit reads preceded by an adjacent 8-bit read >= 128: 1042    violations: 0
+identity  -2*~(J&t)-3-(~J^t) == (J<<2)|t   mismatches over all 128x4 inputs: 0
+```
+
+That kills the "2-bit opcode" reading for good: a 2-bit read is never a field of its own, it is
+the low half of an extended value. The other wrapper (`R3(vm)` / `Ww(vm)` / `A9(vm)` depending
+on build) reads a plain byte with **no** escape - 4277 of the 8-bit reads in that run returned
+>= 128 and had no follow-up, so those came through this path. It is used for the 7-bit varint
+(`J & 128 && (J = J & 127 | R3(t) << b)`).
+
+### The program is consumed as one linear token stream
+
+`--log-only` with the real `f_req` payload, twice, on two builds:
+
+```
+Fhxs: reads 13786  blocks touched 1396/2798 (49.9 %)   token 1057
+pBm : reads 20801  blocks touched 2255/2791 (80.8 %)   token  961
+step histogram (start - previous end): {0: 13646, -10: 19, -8: 2, <5 large jumps}
+```
+
+So the reads are contiguous bit by bit - the interpreter walks the program as a stream, it does
+not jump around like a bytecode PC. The 19 negative steps are the 2-bit re-reads of the escape
+pair, and the handful of large steps are the region transitions already noted in section 11.
+
+### Correction: the block-capture read log is not a trace
+
+Section 16's block capture forces a read of all eight byte offsets of a block whenever its
+keystream is regenerated. Measured consequence: in that mode the logged reads come out at
+multiples of 64 bits with a 56-bit stride, i.e. exactly the block boundaries - the pointer the
+capture leaves behind drags the VM's own position. Numbers from one such run:
+
+```
+blocks 522, bytes known 4176/22303 (18.7 %), reads 523, step histogram {56: 390, 62: 130}
+```
+
+Compare with the 13646/13785 contiguous steps above. **Use `--log-only` for traces and
+block-capture mode only for program bytes**; the two must not be mixed.
+
+Two further defects in that mode were found and fixed, both of which had been making the
+"validation" number look like proof:
+
+* the forced reads leaked into the log (the guard tested `__fp`, and the capture recurses through
+  the reader's own return hook, whose nested call clears `__fp`): one run logged 54 296 reads, all
+  of them at multiples of 64, and "validated" them against the buffer they had just produced.
+  The guard is now an explicit `__lock`.
+* `validate()` compared reads placed over *uncaptured* bytes, which are zero in the buffer. It
+  now takes the capture mask and counts those as `uncovered_reads` instead of matches.
+
+After both fixes, one block-capture run reports:
+
+```
+blocks 300, bytes known 2400/22455 (10.7 %), reads 300,
+validation: match 300  mismatch 0  uncovered_reads 0  malformed 0
+```
+
+One natural read per captured block and nothing else - the mode is honest now, and the
+perturbation it causes (a run that walks the whole program ends in the error regime, section 16)
+is unchanged.
+
+### Why `--fields` used to come back empty: it was breaking the VM, not missing it
+
+This is the concrete explanation for the "patched copy installs, produces tokens, logs nothing"
+symptom in sections 22 and 24, at least on the pBm and EON builds:
+
+The writer ships **two or three copies with different parameter orders** - `FP(vm, id, value)`
+and `e(id, vm, value)` in the same build - and the write hook logged on `arguments[1]`
+unconditionally. On the `(vm, id, value)` copy that is the *field id*, i.e. a number, so
+`id.__wr = id.__wr || []` silently did nothing and `id.__wr.push(...)` threw `TypeError` inside
+a live writer. The first field write killed the patched VM, and the page's own copy (kept in a
+closure, not in `window`) served the mint - a normal-looking token, zero instrumentation.
+
+Fix: the vm is now the parameter the field table is indexed through (`VM.l[id]`, `VM.b[id]`,
+`VM.G[R]` depending on build). Measured after the fix, same tool, three builds:
+
+```
+Fhxs: 698 field writes, 134 distinct ids
+EON : 517 / 520 writes, 88 / 90 distinct ids   (two loads)
+```
+
+`--fields` also had a latent `TypeError: not enough arguments for format string` (six `%s` in
+the script, five supplied) that made the whole mode crash as soon as `--early` was added; fixed.
+
+### Logs live on the VM instance now
+
+The read log used to go to `window` and the write log to the instance. In a run where the text is
+evaluated in more than one realm that split the two logs across objects, and the write record's
+"how many reads had completed" field came back as `0` for a whole mint. Both logs are now written
+to the instance (`vm.__rd`, `vm.__rv`, `vm.__wr`), which is the only object the collector can
+reach through `__vmref` anyway. Alignment after the change, one run:
+
+```
+writes 516  reads 4823  read-index range 0..4809  monotone: True
+```
+
+### What the aligned records say so far (and one negative)
+
+`research/read_records.py` folds the read log into tokens (escape-aware) and prints the token
+range that each field write consumed, so a write can be read as "these program words produced
+this field". Example, EON build:
+
+```
+#75 fid=44 size=0 value="riwmjyadvy"
+    107 7 18 21 2 7 18 21 117 7 18 21 95 7 18 21 111 ...     77 tokens
+#80 fid=23 size=0 value="function(N,Q,h,t,P){E(N,(t=(Q=G((h=K(N,..."   7 tokens
+#83 fid=101 size=0 value="0,function(N,Q,h,t,P){E(N,..."               3 tokens
+```
+
+Two things follow, and the first one is a negative:
+
+* **a write's read range is not a record.** The field id sits at a different token offset in
+  every record (most often 2, then 1, 3, 4, 6, 0, 5, 7 ...), so "one record per field write" is
+  wrong and the grammar cannot be read off the write boundaries alone.
+* **long strings are assembled, not stored.** A 100+ character handler source costs 3-7 tokens,
+  while a 10-character random realm name costs 77. So the program computes strings (concatenation
+  plus a per-run random base) instead of carrying them as literals, which is consistent with
+  section 20's field table: the readable strings there were field *values*, not program bytes.
+
+Next, in order: (1) put the read counter on the reader's *entry* as well, so a write can be
+pinned to the exact reads inside its range rather than to a boundary; (2) split the token stream
+at the operand boundaries the wrapper implies (an 8-bit value, an extended 9-bit value, a seed),
+which gives a typed stream without needing the dispatch table; (3) only then look for the
+dispatch - the `cH`-style tracing of section 10 is the fallback if the stream turns out to be
+interpreted out of order after all.

@@ -74,27 +74,36 @@ JS = r"""(async () => {
   };
   walk(window);
   let found = null, states = [];
+  const inst = (w) => {
+    // logs live on the VM instance (see research/bgpatch.py); window is the fallback for the
+    // patch hunk that has not been migrated yet
+    const v = w.__vmref || {};
+    return { rd: v.__rd || w.__rd || [], rv: v.__rv || w.__rv || [],
+             prog: v.__prog || w.__prog || {}, dump: w.__dump || [] };
+  };
   for (const w of realms) {
     try {
-      const n = Object.keys(w.__prog || {}).length;
-      states.push({ prog: n, rd: (w.__rd || []).length, dump: (w.__dump || []).length });
-      if (!found && (n || (w.__dump || []).length || (w.__rd || []).length)) found = w;
+      const st = inst(w);
+      const n = Object.keys(st.prog).length;
+      states.push({ prog: n, rd: st.rd.length, dump: st.dump.length });
+      if (!found && (n || st.dump.length || st.rd.length)) { found = w; window.__FOUND = st; }
     } catch (e) {}
   }
   if (!found) return JSON.stringify({ tok: tok.length, head: tok.slice(0, 60), states: states,
                                       err: 'no instrumentation state in any realm' });
   const meta = found.__vmeta || {};
+  const st = window.__FOUND;
   const blocks = [];
-  for (const k of Object.keys(found.__prog || {})) blocks.push([parseInt(k, 10), found.__prog[k]]);
+  for (const k of Object.keys(st.prog)) blocks.push([parseInt(k, 10), st.prog[k]]);
   return JSON.stringify({ tok: tok.length, head: tok.slice(0, 24), V: meta.V,
                           nu: (meta.prog || []).length, seed: meta.seed,
                           nblocks: blocks.length, blocks: blocks,
-                          sweep: found.__dump || [], sweepErr: String(found.__sweepErr || ''),
-                          log: found.__rd || [], vals: found.__rv || [] });
+                          sweep: st.dump, sweepErr: String(found.__sweepErr || ''),
+                          log: st.rd, vals: st.rv });
 })()"""
 
 
-def validate(buf: bytearray, log: list, vals: list) -> dict:
+def validate(buf: bytearray, log: list, vals: list, known: bytearray | None = None) -> dict:
     """Bit-slice the recovered buffer at every logged read and compare with the VM's value.
 
     Reads with the decrypt flag off (the 32-bit seed fetch) are skipped by construction:
@@ -104,7 +113,7 @@ def validate(buf: bytearray, log: list, vals: list) -> dict:
     for byte in buf:
         for i in range(7, -1, -1):
             bits.append((byte >> i) & 1)
-    ok = bad = skipped = 0
+    ok = bad = skipped = uncovered = 0
     first = None
     malformed = 0
     for entry, val in zip(log, vals):
@@ -119,6 +128,11 @@ def validate(buf: bytearray, log: list, vals: list) -> dict:
             continue
         if start + cnt > len(bits):
             continue
+        if known is not None and not all(known[(start + i) >> 3] for i in range(cnt)):
+            # a position the run never captured is zero in the buffer, so comparing there
+            # would be a test of the zero fill, not of the recovery
+            uncovered += 1
+            continue
         got = 0
         for i in range(cnt):
             got = (got << 1) | bits[start + i]
@@ -129,7 +143,8 @@ def validate(buf: bytearray, log: list, vals: list) -> dict:
             if first is None:
                 first = {"start": start, "bits": cnt, "logged": logged, "recovered": got}
     return {"match": ok, "mismatch": bad, "skipped_plaintext": skipped,
-            "malformed_entries": malformed, "first_mismatch": first}
+            "uncovered_reads": uncovered, "malformed_entries": malformed,
+            "first_mismatch": first}
 
 
 AB_JS = r"""(async () => {
@@ -277,6 +292,7 @@ FIELDS_JS = r"""(async () => {
     });
     return await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
   };
+  let lastSt = null;
   const collect = () => {
     walk(window);
     // prefer the state the frame pushed out (it may be gone by now)
@@ -295,7 +311,7 @@ FIELDS_JS = r"""(async () => {
     for (const w of realms) {
       try {
         const log = (w.__vmref && w.__vmref.__wr) || w.__wr;
-        if (!best && log && log.length) best = log.slice();
+        if (!best && log && log.length) { best = log.slice(); lastSt = w; }
         if (w.__vmref && w.__vmref.__wr) w.__vmref.__wr = [];
         w.__wr = [];
       } catch (e) {}
@@ -304,6 +320,17 @@ FIELDS_JS = r"""(async () => {
   };
   collect();
   const tokA = await mint(fa);
+  // `ridgeslice` is the module namespace, not the instance, so `__booted` cannot be read off
+  // it. Instead: did *any* realm end up holding patched state? If none did, the mint was
+  // served by a pristine copy and only a page reload can change that.
+  walk(window);
+  let anyState = false;
+  for (const w of realms) {
+    try {
+      if (w.__booted || w.__vmeta || (w.__vmref && (w.__vmref.__wr || []).length) || (w.__wr || []).length) { anyState = true; break; }
+    } catch (e) {}
+  }
+  if (!anyState) return JSON.stringify({ stage: 'pristine-vm', tokA: tokA.length, realms: realms.length });
   const gotA = collect();
   const wrA = Array.isArray(gotA) ? gotA : (gotA.wr || []);
   const tokB = await mint(fb);
@@ -330,6 +357,7 @@ FIELDS_JS = r"""(async () => {
     vmDiag.vmeta = VM.__vmeta ? 1 : 0;
     vmDiag.rd = (VM.__rd || []).length;
     vmDiag.wr = (VM.__wr || []).length;
+    vmDiag.inst = [];
     vmDiag.prog = (VM.__prog ? Object.keys(VM.__prog).length : 0);
     vmDiag.isGlobal = (window.ridgeslice === VM) ? 1 : 0;
     vmDiag.aCalls = window.__aCalls || 0;
@@ -337,12 +365,18 @@ FIELDS_JS = r"""(async () => {
     vmDiag.aLen = (typeof VM.a === 'function') ? String(VM.a).length : -1;
   } catch (e) { vmDiag.err = String(e); }
   const states = realms.map((w) => {
-    try { return { wr: (w.__wr || []).length, rd: (w.__rd || []).length, jy: typeof w.__JY }; }
-    catch (e) { return { err: 1 }; }
+    try {
+      const v = w.__vmref || {};
+      return { wr: ((v.__wr || w.__wr) || []).length, rd: ((v.__rd || w.__rd) || []).length,
+               jy: typeof w.__JY };
+    } catch (e) { return { err: 1 }; }
   });
+  const iv = (lastSt && lastSt.__vmref) || {};
   return JSON.stringify({ vmDiag: vmDiag, states: states, tokA: tokA.length, tokB: tokB.length,
                           tokC: tokC === null ? null : tokC.length, V: meta.V,
-                          nu: (meta.prog || []).length, wrA: wrA, wrB: wrB, wrC: wrC });
+                          nu: (meta.prog || []).length, wrA: wrA, wrB: wrB, wrC: wrC,
+                          rd: iv.__rd || (lastSt && lastSt.__rd) || [],
+                          rv: iv.__rv || (lastSt && lastSt.__rv) || [] });
 })()"""
 
 
@@ -488,6 +522,12 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             html = base64.b64decode(html).decode("utf-8", "replace")
         arr = json.loads("[" + (parse_material(html)[4:]))
         plain = arr[5][-1]
+        # keep the same-build material: builds rotate per load, so a patching failure can only
+        # be diagnosed against the interpreter that this exact load served.
+        tag = str(arr[2])[:16]
+        os.makedirs(out, exist_ok=True)
+        open(os.path.join(out, "interp_" + tag + ".js"), "w").write(plain)
+        open(os.path.join(out, "blob_" + tag + ".txt"), "w").write(arr[0])
         print(f"served /js/bg requests: {len([u for u in cs.served if '/js/bg/' in u])}")
         print(f"build: hash={arr[2]} blob={len(arr[0])} interp={len(plain)} ts={arr[4]}")
         if writers:
@@ -581,18 +621,35 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         if fields:
             fb = freq if (same or mutate is not None) else (
                 freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
-            # the write log comes back empty on some runs even though the reader fired (the
-            # live writer can sit in a copy the anchor misses), so retry a few times before
-            # treating an empty diff as a result
+            # Two independent failures look identical from the outside (an empty write log):
+            # a live writer copy the anchor misses, and the page's own bootguard winning the
+            # race for `ridgeslice` so the VM we call is pristine. The patch marks the instance
+            # (`VM.__booted`), so the injected script can tell them apart - and a pristine VM is
+            # only fixable by reloading the page, not by re-minting.
             d = {}
-            for attempt in range(3):
+            for attempt in range(4):
                 d = json.loads(await cs.eval(FIELDS_JS % (
                     json.dumps(arr), json.dumps(src), json.dumps(freq), json.dumps(fb),
-                    "null" if mutate is None else str(mutate))))
+                    "null" if mutate is None else str(mutate), "false")))
                 if d.get("wrA") and d.get("wrB"):
                     if attempt:
                         print(f"capture succeeded on attempt {attempt + 1}")
                     break
+                if d.get("stage") == "pristine-vm":
+                    print(f"attempt {attempt + 1}: the VM under test is not the patched copy,"
+                          " reloading the page")
+                    arr = await read_doc_material(cs, reload_page=True)
+                    plain = arr[5][-1]
+                    tag = str(arr[2])[:16]
+                    open(os.path.join(out, "interp_" + tag + ".js"), "w").write(plain)
+                    open(os.path.join(out, "blob_" + tag + ".txt"), "w").write(arr[0])
+                    src, info = bgpatch.patch(plain, blockcache=False, writes=True)
+                    arr[2] = base64.urlsafe_b64encode(
+                        hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
+                    cs.body = src.encode()
+                    print(f"           rebuilt against build {arr[2][:16]}, patch:",
+                          {k: v for k, v in info.items() if k not in ("params", "wrappers")})
+                    continue
                 print(f"attempt {attempt + 1}: empty write log, retrying")
                 await asyncio.sleep(2)
             print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
@@ -676,6 +733,10 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             total = (nbytes + 7) // 8
             print(f"log-only: reads={len(d.get('log') or [])} blocks touched={len(blockhit)}"
                   f"/{total} ({round(len(blockhit) / max(total, 1), 4)})")
+            json.dump({"build": {"hash": arr[2], "blob": len(arr[0]), "interp": len(plain)},
+                       "info": info, "run": d},
+                      open(os.path.join(out, "run_log.json"), "w"))
+            print("wrote", os.path.join(out, "run_log.json"))
             return
         if sweep:
             dump = d.get("sweep") or []
@@ -697,7 +758,7 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                         mask[pos] = 1
             print("blocks:", len(blocks), "bytes known:", sum(mask), "/", nbytes,
                   round(sum(mask) / nbytes, 4))
-        print("validation:", validate(buf, d.get("log") or [], d.get("vals") or []))
+            print("validation:", validate(buf, d.get("log") or [], d.get("vals") or [], mask))
         os.makedirs(out, exist_ok=True)
         tag = "sweep" if sweep else "blocks"
         open(os.path.join(out, f"program_{tag}.bin"), "wb").write(bytes(buf))
