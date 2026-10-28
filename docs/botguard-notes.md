@@ -457,8 +457,37 @@ bands are simply not read on this path, they must be pulled on demand by another
 7.75 for the ciphertext, and short runs like `divprotectcache_y` come out readable, so the
 placement is right where it covers.
 
-To finish the plaintext program: log the read positions of the other accessor paths too
-(`R3`, and whatever reads field values), then merge all segments.
+### 12. Field writer and the origin of the keystream seed
+
+`D(fieldId, vm, value)` is the only writer, and it is readable:
+
+```js
+D=function(b,F,t){
+  switch(!(b==230||b==21)){
+    case !null:                                   // b != 230 && b != 21
+      if(F.fe && b!=15) return;
+      b==146||b==277||b==261||b==473||b==311||b==444||b==323||b==495||b==474||b==117
+        ? F.h[b] || (F.h[b] = R(7,0,t,F,142,b))
+        : F.h[b] = R(21,0,t,F,97,b);
+      break;
+    case ![]:                                     // b == 230 || b == 21
+      F.h[b] ? F.h[b].concat(t) : F.h[b] = R(26,F,t);
+  }
+  b==15 && (F.i = JY(32,false,F), F.R = void 0)
+}
+```
+
+So the keystream seed `t.i` is simply **32 bits stored in the program itself**, read with
+`JY(32, false, vm)` - decryption off. Field 230 is the bit pointer, 21 concatenates, and
+ten specific ids (146, 277, 261, 473, 311, 444, 323, 495, 474, 117) use `R(7, ...)` while
+every other field uses `R(21, ...)`.
+
+That also explains the read gaps: fields are created lazily by `R` and only pulled from the
+program when dereferenced (`z` -> `.value` -> `w` -> `.create()`), so the two skipped bands
+are read by that lazy path rather than by `JY` during the initial sweep.
+
+To finish the plaintext program: instrument `R` as well (it is the factory behind every
+field), then merge its reads with `JY`'s.
 
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
