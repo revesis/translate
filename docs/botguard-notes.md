@@ -349,47 +349,26 @@ jump between regions (2768 → 35212), so the trace covers several functions.
 This gives the instruction stream as `(bit offset, remaining bits)` pairs without
 knowing the encoding in advance.
 
-### First sign of real structure
+### The x2 framing was wrong (retracted)
 
-All offsets are **even**, so the counter is in 2-bit units: the real bit offset is
-`F * 2`. Reading the raw program at those scaled offsets and taking the first 4 bits of
-each instruction gives a stream with an obvious loop in it:
+An earlier note claimed the bit counter was in 2-bit units (`offset * 2`) because the
+first 4 bits at those offsets showed a repeating period-6 body. A longer trace refutes it:
+`F` reaches 136108, so `F * 2` = 272216 **exceeds the program** (178824 bits), and at the
+raw offsets the same 4-bit field is uniform (16 of 16 values in a 65-instruction run, no
+loop). The apparent structure at x2 was aliasing on a bit-shifted read.
 
-```
-... 4, 10, 12, 4, 3, 4,   4, 4, 10, 12, 4, 3, 4,   4, 4, 10, 12, 4, 3, 4, 4 ...
-```
+What actually survives as fact:
 
-A repeating period-6 body (`4, 10, 12, 4, 3, 4`) is not something random data produces -
-this is the first evidence that `(offset * 2, 4-bit field)` is the right framing, and
-that the trace is walking a loop. A uniform-distribution check over 4-8 bit windows on
-*unscaled* offsets showed nothing (5-15 % concentration); with the x2 scaling a 4-bit
-field concentrates 44 % on 14 of 16 values.
+* `F` is even-aligned in every hit (deltas 24, 26, 32, 34, 42, 50, 68).
+* Raw `F` stays inside the program: 66206 .. 136108 of 178824 bits.
+* Instruction-to-instruction distance is 24-68 bits, consistent per opcode value seen so
+  far (52/68/136 for one, 52 for another, 84 for a third).
+* No 4-bit opcode prefix is visible at raw offsets in either bit order.
 
-### Instruction widths converge per opcode
-
-Using the scaled offsets, the distance to the next instruction (`(F_next - F) * 2` bits)
-is *consistent per opcode value*, which is what a real encoding looks like:
-
-| 4-bit field | instruction width | count |
-| --- | --- | --- |
-| 4 | 52 bits (also 68 and 136) | 18 / 9 / 9 |
-| 10 | 52 bits | 9 |
-| 12 | 84 bits | 9 |
-| 3 | 100 and 64 bits | 2 / 1 |
-| 15 | 48 / 56 bits | 2 / 1 |
-
-Every width is a multiple of 4, so the layout is `4-bit opcode + fixed-size operands`
-(op 12 carries 80 operand bits = 10 bytes, op 10 carries 48 bits = 6 bytes). The very
-large widths in the table above are the region jumps, not instructions.
-
-Practical limit: pause-based tracing is slow. Each `Debugger.pause`/`resume` round trip
-costs a millisecond or two, and `Runtime.evaluate` has a 120 s ceiling, so a 3000-hit
-trace at 4 ms intervals times out. Keep traces in the few-hundred-hit range, or drive the
-sampler from `Debugger.setBreakpoint` hits (no pause requests) instead of polling.
-
-Also: a 400-hit trace is dominated by one loop - the same instruction offsets repeat
-(op 12 at bit 132636 nine times, identical operands). Widen coverage before drawing
-conclusions about the instruction set.
+Conclusion: the opcode framing cannot be inferred by guessing offsets into `NU`. It has to
+be read from the interpreter itself - hook the bit reader and log `(bit offset, value,
+width)` for every call. That yields the instruction stream directly, with no framing
+assumptions.
 
 ### Coverage limit of one breakpoint
 
