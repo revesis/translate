@@ -1970,3 +1970,43 @@ bytes in the size accounting: the marker tail is written by a path the emit hook
 
 So the head of the token is not a constant that gets prepended at the end - it is emitted first, one
 chunk at a time, by the program.
+
+## 38. Aligning the emission log with the token itself: 843 of 851 bytes accounted for
+
+`run_one.py` now returns the token string as well, so the emission log can be aligned against the
+actual bytes instead of counted. One run (Fhxs, token 1136 chars = 851 bytes, 19 emissions of which
+13 target field 146):
+
+```
+token head : 1e 00 b8 00 5a | d0 00 06 0b 77 65 eb 2b 77 | 5f ...
+              ^ 5-byte preamble        ^ the section-1 marker
+emissions  : [208] [0,6] [11,119,101,235,43,119] [95] [182,88,175,137] [208,219,78,140] ...
+             = d0    00 06  0b 77 65 eb 2b 77        5f  ...
+```
+
+So the marker that section 1 captured from the wire is emitted as three separate chunks, the byte
+after it (`5f`) as a fourth, and the alignment then walks the rest of the stream:
+
+```
+aligned from byte 5 to byte 850 of 851
+  gap at 0  (5 bytes) : 1e 00 b8 00 5a      <- the preamble (C = AY(2).concat(field146), C[1]=C[0]^30;
+                                               here 0x1e ^ 0x00 = 0x1e, the same invariant section 1
+                                               measured as 0x35 ^ 0x2b)
+  gap at 90 (1 byte)  : 75
+  gap at 93 (1 byte)  : 63
+  tail      (1 byte)  : eb
+```
+
+Reading: **843 of the token's 851 bytes come out of the emission log**, 5 of the remaining 8 are the
+preamble, and three single bytes sit between chunks. Those three are written by the encode-time path
+that the emit hook does not see (the `concat` of section 2b) - which is also why the earlier size
+accounting came out as `+9, +9, +8`: the head is 5 + a small number of stray bytes, one per affected
+chunk boundary.
+
+Also verified in the same run: emission payloads for other fields (444, 473, 134) do **not** appear
+anywhere in the token - only field 146's stream does. That is the discriminator that makes the
+alignment unambiguous.
+
+With that, the token's byte layout is measured end to end for one build: `preamble(5) + emitted
+chunks(843) + 3 stray bytes`, in emission order, and every chunk's payload is either known (<=16B)
+or known by length.

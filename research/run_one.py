@@ -49,7 +49,7 @@ JS = r"""(async () => {
   let vm = null;
   for (const w of realms) { try { if (!vm && w.__vmref) vm = w.__vmref; } catch (e) {} }
   if (!vm) return JSON.stringify({stage: 'no vm', tok: tok.length});
-  return JSON.stringify({tok: tok.length, ip: vm.__ip || [], rd: vm.__rd || [], rv: vm.__rv || [],
+  return JSON.stringify({tok: tok.length, tokstr: tok, ip: vm.__ip || [], rd: vm.__rd || [], rv: vm.__rv || [],
                          wr: vm.__wr || [], hn: vm.__hn || {}, fr: vm.__fr || [],
                          hr: vm.__hr || {}, em: vm.__em || [],
                          V: vm.V || vm.U || vm.j || null});
