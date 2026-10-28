@@ -23,6 +23,7 @@ blocks were regenerated before it, and the sweep only agrees with the natural pl
 the blocks whose visit order it happens to reproduce (measured: divergence from block 43).
 """
 import argparse
+import collections
 import asyncio
 import base64
 import hashlib
@@ -821,7 +822,10 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 for b in range(start // 64, (start + cnt - 1) // 64 + 1):
                     blockhit.add(b)
             total = (nbytes + 7) // 8
-            ip = [x for x in (d.get("ip") or []) if isinstance(x, (int, float))]
+            ip = [x for x in (d.get("ip") or [])
+                  if isinstance(x, (int, float)) or (isinstance(x, list) and len(x) == 2)]
+            ptrs = [x[0] if isinstance(x, list) else x for x in ip]
+            depth = collections.Counter(x[1] for x in ip if isinstance(x, list))
             rows = d.get("tab") or []
             tab = {int(t[0]): t for t in rows if isinstance(t, list) and t}
             ptypes = {}
@@ -833,8 +837,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             print(f"log-only: reads={len(reads)} (malformed {len(raw) - len(reads)})"
                   f" blocks touched={len(blockhit)}/{total}"
                   f" ({round(len(blockhit) / max(total, 1), 4)})"
-                  f"  instructions={len(ip)} distinct_ips={len(set(ip))}"
-                  f" monotone={ip == sorted(ip)}")
+                  f"  instructions={len(ip)} distinct_ips={len(set(ptrs))}"
+                  f" monotone={ptrs == sorted(ptrs)} depths={dict(depth)}")
             json.dump({"build": {"hash": arr[2], "blob": len(arr[0]), "interp": len(plain)},
                        "info": info, "run": d},
                       open(os.path.join(out, "run_log.json"), "w"))

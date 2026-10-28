@@ -385,7 +385,14 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # `,(expr)` with no trailing paren: the fetch sits in one of two shapes -
         # `if(A=f(PTR,V),A>=L)` and `if((A=f(PTR,V),A)>=L)` - and only this form is valid in
         # both. (A stray paren here is compiled at runtime and comes back as FNLSyntaxError.)
-        inject = (",(" + vm_l + ".__ip=" + vm_l + ".__ip||[]).push(" + lv + ")")
+        # `pe` is the interpreter's own nesting counter (`F.pe++` on entry, `F.pe--` on exit),
+        # so logging it with the pointer separates the loop's levels - a nested run pushes its
+        # own boundaries into the same array otherwise, and the segments mix two streams.
+        # the nesting counter's name rotates with the build (`F.pe++` on Fhxs, `q.U8++` on EON):
+        # take it from the `if(!VM.X){VM.COUNTER++;` prologue of the loop-containing function
+        mdep = re.search(r"if\(!(\w+)\.\w+\)\{(\w+)\.(\w+)\+\+;", src)
+        dep = (mdep.group(2) + "." + mdep.group(3)) if mdep else "null"
+        inject = (",(" + vm_l + ".__ip=" + vm_l + ".__ip||[]).push([" + lv + "," + dep + "])")
         src = src[:m.end()] + inject + src[m.end():]
         info_loop = {"loop_sites": len(hits), "loop": m.group(0), "ip_log": vm_l + ".__ip",
                      "inner_text": in_string(src, m.start())}

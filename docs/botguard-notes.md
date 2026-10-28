@@ -1327,3 +1327,95 @@ concluded from segments; (2) capture a handler while it is live - the field slot
 the mint, so this needs a poller or a breakpoint, not a post-mortem walk; (3) re-run the
 op-to-effect join with both of those in place, which is the point where an instruction table
 becomes a table instead of a guess.
+
+## 27. The instruction table, measured
+
+Three things had to be fixed before the opcode question could be answered, and the answer turned
+out to be "there is no opcode - there is a handler id plus a per-handler operand layout".
+
+### Nesting: there is none (measured, instrument fixed)
+
+The loop's nesting counter rotates with the build (`F.pe` on Fhxs, `q.U8` on pBm, `V.mp` on EON),
+so the counter is now taken from the loop-containing function's `if(!VM.X){VM.COUNTER++;` prologue
+instead of being hard-coded. Logging it beside the pointer gives, for a whole run:
+
+```
+instructions 956   depths {1: 956}          (EON)
+instructions 1222  depths {1: 1222}         (Fhxs)
+```
+
+Every boundary is at depth 1, so the segments from section 26 do **not** mix two loop levels - that
+hypothesis is dead and the variability in per-handler effects is a property of the handlers.
+
+### The write attribution was off by one
+
+A write carries "reads completed when it fired" (`wr[i][3]`). The window of instruction `k` is
+`[i, j)` in read indices, so the correct test is `i < readsCompleted <= j`; the first version used
+`i <= readsCompleted`, which credited each write to the *previous* instruction (visible in the
+samples as a target field equal to the previous instruction's target). After the fix, the join is
+clean: **every instruction that writes exactly one field has that field id among its own tokens**
+(511/511 in one run, 519/519 in another).
+
+### Handler -> layout
+
+`research/disasm.py` prints the profile. One run (EON, 956 instructions, 519 writes):
+
+```
+handler   n  arity(top)            writes  target-index
+   288  138  {5:60, 8:58, 7:10}       131  {2:131}
+    50  124  {3:123, 4:1}             124  {2:124}
+   104  108  {5:67, 4:8, 6:5}           0  {}
+    48   74  {3:73, 1:1}               73  {2:73}
+   418   58  {2:58}                     0  {}
+   412   58  {4:58}                     0  {}
+    18   48  {4:46, 5:2}                0  {}
+    37   46  {3:40, 1:6}               40  {2:40}
+    55   41  {5:17, 6:8, 4:8}           0  {}
+```
+
+and from another run, the handlers that put the target first or last:
+
+```
+    32   31  {3:31}                     31  {1:31}      -> [32, TARGET, value]
+    87   17  {6:15, 1:2}                13  {1:13}      -> [87, TARGET, a, b, c, d]
+    96   26  {4:26}                     25  {3:24}      -> [96, a, b, TARGET]
+   113   21  {7:11, 5:6, 1:2}           17  {2:17}
+```
+
+Concretely, from the disassembly:
+
+```
+[87 108 0 2 8 0]        writes 108
+[87 17 0 144 238 241]   writes 17
+[32 40 208]             writes 40
+[32 81 16]              writes 81
+[37 46 32]              writes 32
+[50 ...]                writes its second token
+```
+
+So the grammar is `[handler, operands...]` where the handler decides how many operands follow and
+where the target field id sits - index 1, 2 or 3 depending on the handler, and a large group of
+handlers (104, 418, 412, 18, 55 in that run) never writes at all, i.e. they produce values for the
+next handler. Arity varies for the data-carrying handlers (`288`: 5/8/7) exactly as a
+length-prefixed inline payload would.
+
+**Caveat that matters for anything reusable: the handler ids rotate per build.** The three-token
+writer with the target at index 2 is `101` in one run and `50` in the next, on the same build
+family. Only the (arity, target-position) shape is stable, so any table has to be rebuilt per
+load, or keyed by shape rather than by id.
+
+### Where this leaves the decompiler
+
+Facts now in hand, each with a reproducible instrument behind it:
+
+1. the program's plaintext, per 64-bit block (section 16), and its read stream (section 25);
+2. instruction boundaries, one per executed instruction (section 26), with nesting (this section);
+3. the operand tokens of every instruction, and the field(s) it wrote (this section);
+4. the shape of the handlers: arity and target position, per build.
+
+The open end is the *non-writing* handlers: 104/418/412/18/55 in one run are 60 % of the executed
+instructions, and what they push (a value, a string, a callback) is not visible in the write log.
+Two ways in, in order of cost: (a) join the *field reads* to the instruction (a handler that reads
+field X leaves a `z(X, vm)` trail, which shows up as the field id among the tokens), or (b) capture
+a live handler - a breakpoint on the loop that dumps `String(Y)` once per handler id, since the
+slot is drained after the mint and a post-mortem walk only ever sees `create,concat`.
