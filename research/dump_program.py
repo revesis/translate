@@ -446,7 +446,8 @@ FIELDS_JS = r"""(async () => {
                           tokC: tokC === null ? null : tokC.length, V: meta.V,
                           nu: (meta.prog || []).length, wrA: wrA, wrB: wrB, wrC: wrC,
                           rd: iv.__rd || (lastSt && lastSt.__rd) || [],
-                          rv: iv.__rv || (lastSt && lastSt.__rv) || [] });
+                          rv: iv.__rv || (lastSt && lastSt.__rv) || [],
+                          ip: iv.__ip || [], hn: iv.__hn || {} });
 })()"""
 
 
@@ -695,7 +696,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             print({k: v for k, v in d.items() if k not in ("wrA", "wrB", "wrC", "states")})
             print("vm diag:", d.get("vmDiag"), "| realms:", len(d.get("states") or []))
             a, b = d.get("wrA") or [], d.get("wrB") or []
-            print(f"field writes: A={len(a)} B={len(b)}")
+            print(f"field writes: A={len(a)} B={len(b)}"
+                  f"  instructions={len(d.get('ip') or [])}  handlers={len(d.get('hn') or {})}")
             if a and b:
                 differ = [(x, y) for x, y in zip(a, b) if x != y]
                 print("positions differing:", len(differ))
@@ -733,7 +735,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                     tag = str(arr[2])[:16]
                     open(os.path.join(out, "interp_" + tag + ".js"), "w").write(plain)
                     open(os.path.join(out, "blob_" + tag + ".txt"), "w").write(arr[0])
-                    src, info = bgpatch.patch(plain, blockcache=False, writes=True)
+                    src, info = bgpatch.patch(plain, blockcache=False, writes=True,
+                                              loop=loop, handlers=handlers)
                     arr[2] = base64.urlsafe_b64encode(
                         hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
                     cs.body = src.encode()
@@ -755,7 +758,8 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
                 print(f"mutation-only differences: {len(effect)}")
                 for x, z in effect[:15]:
                     print("  ", x[0], x[1], str(x[2])[:60], "->", z[1], str(z[2])[:60])
-            print(f"field writes: A={len(a)} B={len(b)}")
+            print(f"field writes: A={len(a)} B={len(b)}"
+                  f"  instructions={len(d.get('ip') or [])}  handlers={len(d.get('hn') or {})}")
             differ = [(x, y) for x, y in zip(a, b) if x != y]
             print("positions differing:", len(differ))
             for x, y in differ[:12]:

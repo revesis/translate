@@ -33,7 +33,9 @@ def load(path):
              for e, v in zip(log, vals)]
     ips = [x for x in (d.get("ip") or []) if isinstance(x, (int, float)) or
            (isinstance(x, list) and len(x) == 2)]
-    writes = [w for w in (d.get("wr") or []) if isinstance(w, list) and len(w) >= 4]
+    # `wr` comes from a write-log run, `wrA` from `--fields` (the first of its two mints)
+    writes = [w for w in (d.get("wr") or d.get("wrA") or [])
+              if isinstance(w, list) and len(w) >= 4]
     return d, reads, ips, writes
 
 
@@ -84,6 +86,7 @@ def main() -> None:
     ap.add_argument("--handler", type=int, help="dump every instance of one handler")
     ap.add_argument("--instr", help="slice of instructions, e.g. 0:40")
     ap.add_argument("--limit", type=int, default=16, help="tokens per instruction when dumping")
+    ap.add_argument("--emit", help="write a machine-readable map (op -> kind/arity/target)")
     a = ap.parse_args()
 
     d, reads, ips, writes = load(a.path)
@@ -117,6 +120,33 @@ def main() -> None:
         t = " ".join(str(v) for v in x["tokens"][:a.limit])
         extra = "" if len(x["tokens"]) <= a.limit else f" ...(+{len(x['tokens']) - a.limit})"
         print(f"  [{t}{extra}]  writes {w}")
+
+    if a.emit:
+        hn = {int(k): v for k, v in (d.get("hn") or {}).items()}
+        prof = collections.defaultdict(lambda: {"count": 0, "arities": collections.Counter(),
+                                                "target_positions": collections.Counter(),
+                                                "writes": 0, "samples": []})
+        for x in ins:
+            t = x["tokens"]
+            p = prof[t[0]]
+            p["count"] += 1
+            p["arities"][len(t)] += 1
+            if len(x["written"]) == 1:
+                p["writes"] += 1
+                if x["written"][0] in t[1:]:
+                    p["target_positions"][t[1:].index(x["written"][0]) + 1] += 1
+            if len(p["samples"]) < 3:
+                p["samples"].append(t[:10])
+        out = {"reads": len(reads), "instructions": len(ins), "writes": len(writes),
+               "handlers": {str(op): {"value": (hn.get(op) or "")[:120],
+                                       "count": pr["count"],
+                                       "arities": dict(pr["arities"]),
+                                       "writes": pr["writes"],
+                                       "target_positions": dict(pr["target_positions"]),
+                                       "samples": pr["samples"]}
+                            for op, pr in prof.items()}}
+        json.dump(out, open(a.emit, "w"), indent=1)
+        print(f"wrote {a.emit} ({len(out['handlers'])} ops)")
 
     if a.handler is not None:
         for x in ins:

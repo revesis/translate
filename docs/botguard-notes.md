@@ -1498,3 +1498,58 @@ per-build map `op id -> (kind, arity, operands, target)` in a machine-readable f
 joining the three logs, so that a later session can compare two builds by *shape* and see which
 operations are stable (arithmetic, compare, eval, 32-bit packing) and which are environment
 probes that change with the page.
+
+## 29. One run, three logs, one machine-readable map
+
+`--fields` mints twice (payload A, payload B) to diff them, which silently breaks the
+write-to-instruction join: the write log then holds both mints and every write lands in the wrong
+window. So the join has its own runner:
+
+```
+research/run_one.py     one page load, one mint, patch(writes, loop, handlers)
+                        -> one.json {ip, rd, rv, wr, hn, V, tok}
+research/disasm.py      --table (per-op profile), --emit (machine-readable map), --handler N,
+                        --instr a:b (disassembly)
+```
+
+First map, committed as `research/opmap-sample.json` (EON build, 19 KB):
+
+```
+reads 4946   boundaries 939 (unmapped 33)   instructions 906   writes 518
+distinct ops 78   captured handler values 48   depths {1: 906}
+
+ops with a single arity and at least one write: 5
+ops that never write:                          65
+```
+
+and the per-op profile that matters, unchanged from section 27 and now on a single mint:
+
+```
+handler   n  arity(top)             writes  target-index
+   288  141  {5:61, 8:58, 1:12}        129  {2:129}
+    73  124  {3:123, 4:1}             124  {2:124}
+   104  121  {5:40, 6:38, 4:16}         0  {}
+    48   73  {3:73}                    73  {2:73}
+    37   59  {3:54, 1:5}               59  {2:54}
+   412   59  {4:58, 1:1}                0  {}
+   418   58  {2:58}                     0  {}
+    18   48  {4:46, 5:2}                0  {}
+    34   28  {3:28}                    28  {1:28}
+```
+
+Two things the map makes obvious that the tables did not:
+
+* **the handler ids are per build but the shape is not.** The three-token writer with the target at
+  index 2 was `101` in one run, `73` in this one and `50` in another, on the same build family.
+  Anything reusable must key on `(arity, target position, handler source shape)`, never on the id.
+* **a single-token "instruction" is a boundary artefact, not an op.** 33-34 boundaries per run have
+  no read at their offset (the loop takes the `if(F.o)` path, which reads from a different field
+  and does not touch the program pointer), and the header instruction that consumes the whole ASCII
+  table shows up as one 169-token record. Both are visible in the arity histograms and should be
+  excluded before a map is used to compare builds.
+
+What is still missing for "generate the field table offline": the map says *which* fields an op
+writes and in what order, but not how the value is computed. The 47 functions captured in section
+28 are the computation, in source form, one per op - so the remaining work is to read those
+functions (they are plain, if flattened, JavaScript) and pair each with the operands its arity
+implies. That is a per-build transcription task now, not a discovery task.

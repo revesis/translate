@@ -1,0 +1,1513 @@
+{
+ "reads": 4946,
+ "instructions": 906,
+ "writes": 518,
+ "handlers": {
+  "133": {
+   "value": "function(N,Q,h,t,P,a){for(a=40;a!=59;)a==37?(E(N,Q,t),a=59):a==69?(t[U](A9(N)),a=4):a==40?(Q=K(N,23),P=Za(S,7,5),t=[],h=",
+   "count": 4,
+   "arities": {
+    "169": 1,
+    "9": 1,
+    "67": 1,
+    "49": 1
+   },
+   "writes": 4,
+   "target_positions": {
+    "1": 4
+   },
+   "samples": [
+    [
+     133,
+     66,
+     165,
+     1,
+     59,
+     250,
+     77,
+     124,
+     90,
+     103
+    ],
+    [
+     133,
+     17,
+     6,
+     11,
+     119,
+     101,
+     235,
+     43,
+     119
+    ],
+    [
+     133,
+     77,
+     64,
+     1,
+     16,
+     10,
+     217,
+     212,
+     225,
+     213
+    ]
+   ]
+  },
+  "104": {
+   "value": "function(N,Q,h,t,P,a,X,f,A){{A=42;while(A!=30)A==94?A=P--?75:20:A==4?A=94:A==3?A=94:A==75?(a=(f=Za(Y,7,7),-(a|f)+3*(a&f)",
+   "count": 121,
+   "arities": {
+    "3": 1,
+    "37": 1,
+    "5": 40,
+    "34": 1,
+    "90": 1,
+    "6": 38,
+    "11": 1,
+    "12": 3,
+    "9": 4,
+    "22": 1,
+    "10": 3,
+    "18": 2,
+    "7": 2,
+    "13": 1,
+    "19": 1,
+    "14": 2,
+    "4": 16,
+    "187": 1,
+    "108": 1,
+    "35": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     104,
+     111,
+     0
+    ],
+    [
+     104,
+     31,
+     25,
+     127,
+     162,
+     1,
+     72,
+     79,
+     5,
+     135
+    ],
+    [
+     104,
+     86,
+     2,
+     86,
+     32
+    ]
+   ]
+  },
+  "87": {
+   "value": "function(){K(0,42,D,4)}",
+   "count": 16,
+   "arities": {
+    "6": 15,
+    "1": 1
+   },
+   "writes": 13,
+   "target_positions": {
+    "1": 13
+   },
+   "samples": [
+    [
+     87,
+     0,
+     0,
+     2,
+     8,
+     0
+    ],
+    [
+     87,
+     80,
+     20,
+     123,
+     116,
+     113
+    ],
+    [
+     87,
+     99,
+     132,
+     111,
+     56,
+     158
+    ]
+   ]
+  },
+  "37": {
+   "value": "function(N,Q,h,t,P){{P=29;while(P!=41)P==29?P=B7(26,339,N,true,Q,false)?41:36:P==36&&(h=Z(c,9),t=Z(N,7),E(F,t,function(a",
+   "count": 59,
+   "arities": {
+    "3": 54,
+    "1": 5
+   },
+   "writes": 54,
+   "target_positions": {
+    "2": 54
+   },
+   "samples": [
+    [
+     37,
+     31,
+     34
+    ],
+    [
+     37,
+     97,
+     90
+    ],
+    [
+     37,
+     81,
+     73
+    ]
+   ]
+  },
+  "18": {
+   "value": "function(N,Q,h,t,P,a,X,f){{f=47;while(f!=40)f==94?(t=G(Q,N),P=G(h,x),G(a,N)[P]=t,f=31):f==47?(a=Z(N,19),h=Z(N,7),Q=K(N,1",
+   "count": 48,
+   "arities": {
+    "4": 46,
+    "5": 2
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     18,
+     34,
+     111,
+     0
+    ],
+    [
+     18,
+     124,
+     86,
+     51
+    ],
+    [
+     18,
+     90,
+     111,
+     0
+    ]
+   ]
+  },
+  "34": {
+   "value": "function(){K(0,40,c,1)}",
+   "count": 28,
+   "arities": {
+    "3": 28
+   },
+   "writes": 28,
+   "target_positions": {
+    "1": 28
+   },
+   "samples": [
+    [
+     34,
+     102,
+     208
+    ],
+    [
+     34,
+     51,
+     16
+    ],
+    [
+     34,
+     27,
+     95
+    ]
+   ]
+  },
+  "494": {
+   "value": "function(){SX(F,1)}",
+   "count": 5,
+   "arities": {
+    "3": 5
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     494,
+     102,
+     299
+    ],
+    [
+     494,
+     27,
+     299
+    ],
+    [
+     494,
+     85,
+     299
+    ]
+   ]
+  },
+  "372": {
+   "value": "function(N){KS(N,3)}",
+   "count": 2,
+   "arities": {
+    "3": 2
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     372,
+     17,
+     299
+    ],
+    [
+     372,
+     77,
+     299
+    ]
+   ]
+  },
+  "466": {
+   "value": "function(N){SX(N,4)}",
+   "count": 2,
+   "arities": {
+    "3": 2
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     466,
+     80,
+     299
+    ],
+    [
+     466,
+     99,
+     299
+    ]
+   ]
+  },
+  "96": {
+   "value": "function(N,Q,h,t,P,a){(a=(P=l((Q=Z(N,(h=Z((t=Z(N,6),N),17),8)),S),h),B(F,t)),q)(c,Q,a[P])}",
+   "count": 22,
+   "arities": {
+    "4": 22
+   },
+   "writes": 22,
+   "target_positions": {
+    "3": 19,
+    "1": 1,
+    "2": 2
+   },
+   "samples": [
+    [
+     96,
+     124,
+     12,
+     79
+    ],
+    [
+     96,
+     464,
+     106,
+     17
+    ],
+    [
+     96,
+     17,
+     50,
+     11
+    ]
+   ]
+  },
+  "288": {
+   "value": "function(N,Q,h,t,P,a){for(a=12;a!=30;)a==32?a=D.R==c||P==S.CV&&h==N?74:30:a==27?(t=Ps(3,1,0,c),h=t.WZ,P=t.R2,a=32):a==12",
+   "count": 141,
+   "arities": {
+    "1": 12,
+    "5": 61,
+    "6": 3,
+    "8": 58,
+    "7": 7
+   },
+   "writes": 129,
+   "target_positions": {
+    "2": 129
+   },
+   "samples": [
+    [
+     288
+    ],
+    [
+     288,
+     79,
+     54,
+     1,
+     124
+    ],
+    [
+     288
+    ]
+   ]
+  },
+  "90": {
+   "value": "function(){K(0,41,x,2)}",
+   "count": 4,
+   "arities": {
+    "4": 4
+   },
+   "writes": 4,
+   "target_positions": {
+    "1": 4
+   },
+   "samples": [
+    [
+     90,
+     207,
+     3,
+     83
+    ],
+    [
+     90,
+     30,
+     8,
+     0
+    ],
+    [
+     90,
+     329,
+     111,
+     157
+    ]
+   ]
+  },
+  "375": {
+   "value": "function(N,Q,h,t,P,a,X,f,A,g){for(g=84;g!=86;)g==84?g=B7(24,339,x,true,Q,false)?86:54:g==54&&(a=Ps(3,1,0,N.R),P=a.R2,t=a",
+   "count": 3,
+   "arities": {
+    "8": 1,
+    "9": 1,
+    "1": 1
+   },
+   "writes": 2,
+   "target_positions": {
+    "2": 2
+   },
+   "samples": [
+    [
+     375,
+     55,
+     13,
+     4,
+     17,
+     26,
+     107,
+     84
+    ],
+    [
+     375,
+     55,
+     19,
+     5,
+     17,
+     30,
+     30,
+     103,
+     118
+    ],
+    [
+     375
+    ]
+   ]
+  },
+  "73": {
+   "value": "function(N,Q,h){(N=(h=(Q=K(x,19),Z)(D,18),F.G[Q]&&l(c,Q)),E)(S,h,N)}",
+   "count": 124,
+   "arities": {
+    "3": 123,
+    "4": 1
+   },
+   "writes": 124,
+   "target_positions": {
+    "2": 124
+   },
+   "samples": [
+    [
+     73,
+     65,
+     110
+    ],
+    [
+     73,
+     91,
+     49
+    ],
+    [
+     73,
+     1,
+     118
+    ]
+   ]
+  },
+  "418": {
+   "value": "function(N,Q){VV(95,339,(Q=B(N,Z(Y,13)),bq^=ps,Q),0,104,c.R)}",
+   "count": 58,
+   "arities": {
+    "2": 58
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     418,
+     30
+    ],
+    [
+     418,
+     30
+    ],
+    [
+     418,
+     13
+    ]
+   ]
+  },
+  "48": {
+   "value": "function(N,Q,h,t,P){q(N,(Q=(t=(P=K(N,20),Z(F,20)),B(S,P)),h=l(D,t),t),h+Q)}",
+   "count": 73,
+   "arities": {
+    "3": 73
+   },
+   "writes": 73,
+   "target_positions": {
+    "2": 73
+   },
+   "samples": [
+    [
+     48,
+     61,
+     118
+    ],
+    [
+     48,
+     61,
+     118
+    ],
+    [
+     48,
+     125,
+     63
+    ]
+   ]
+  },
+  "412": {
+   "value": "function(N,Q,h,t,P){{P=83;while(P!=37)P==16?(q(F,339,F.U),P=37):P==40?P=8:P==20?P=Q?21:16:P==84?(t--,P=8):P==83?(Q=N.Ht[",
+   "count": 59,
+   "arities": {
+    "4": 58,
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     412,
+     2,
+     61,
+     118
+    ],
+    [
+     412,
+     2,
+     61,
+     118
+    ],
+    [
+     412,
+     2,
+     61,
+     63
+    ]
+   ]
+  },
+  "123": {
+   "value": "function(N,Q,h,t,P,a){for(a=12;a!=30;)a==32?a=D.R==c||P==S.CV&&h==N?74:30:a==27?(t=Ps(3,1,0,c),h=t.WZ,P=t.R2,a=32):a==12",
+   "count": 23,
+   "arities": {
+    "5": 5,
+    "7": 15,
+    "6": 2,
+    "1": 1
+   },
+   "writes": 22,
+   "target_positions": {
+    "2": 22
+   },
+   "samples": [
+    [
+     123,
+     6,
+     61,
+     1,
+     110
+    ],
+    [
+     123,
+     27,
+     28,
+     3,
+     464,
+     61,
+     82
+    ],
+    [
+     123,
+     6,
+     61,
+     1,
+     110
+    ]
+   ]
+  },
+  "68": {
+   "value": "function(N,Q,h,t,P){{P=29;while(P!=41)P==29?P=B7(26,339,N,true,Q,false)?41:36:P==36&&(h=Z(c,9),t=Z(N,7),E(F,t,function(a",
+   "count": 24,
+   "arities": {
+    "3": 23,
+    "1": 1
+   },
+   "writes": 22,
+   "target_positions": {
+    "2": 22
+   },
+   "samples": [
+    [
+     68,
+     63,
+     28
+    ],
+    [
+     68,
+     63,
+     28
+    ],
+    [
+     68,
+     63,
+     110
+    ]
+   ]
+  },
+  "35": {
+   "value": "function(N,Q,h,t,P,a,X,f,A){{A=42;while(A!=30)A==94?A=P--?75:20:A==4?A=94:A==3?A=94:A==75?(a=(f=Za(Y,7,7),-(a|f)+3*(a&f)",
+   "count": 24,
+   "arities": {
+    "6": 7,
+    "4": 5,
+    "5": 8,
+    "7": 1,
+    "47": 1,
+    "8": 1,
+    "9": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     35,
+     63,
+     2,
+     15,
+     157,
+     1
+    ],
+    [
+     35,
+     63,
+     2,
+     150,
+     1,
+     74
+    ],
+    [
+     35,
+     108,
+     1,
+     127
+    ]
+   ]
+  },
+  "149": {
+   "value": "function(N,Q,h){(h=Z(N,(Q=K(c,3),13)),q)(Y,h,\"\"+l(N,Q))}",
+   "count": 2,
+   "arities": {
+    "3": 2
+   },
+   "writes": 2,
+   "target_positions": {
+    "1": 1,
+    "2": 1
+   },
+   "samples": [
+    [
+     149,
+     94,
+     94
+    ],
+    [
+     149,
+     0,
+     94
+    ]
+   ]
+  },
+  "128": {
+   "value": "function(N,Q,h,t,P,a,X,f,A,g,n,w,I,Na,k,kG,p,S$){{p=68;while(p!=22)p==34?(X=0,p=61):p==10?p=92:p==86?p=I<w?88:21:p==92?p",
+   "count": 1,
+   "arities": {
+    "11": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     128,
+     61,
+     67,
+     0,
+     129,
+     48,
+     16,
+     126,
+     126,
+     60
+    ]
+   ]
+  },
+  "61": {
+   "value": "function($G,GN,At,j$,YP,M){for(M=88;M!=34;)M==44?M=j$>=At[v]?1:16:M==53?M=44:M==1?(At[U](Z(N,21)),M=53):M==16?(j$=At[j$]",
+   "count": 1,
+   "arities": {
+    "6": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     61,
+     0,
+     104,
+     87,
+     125,
+     65
+    ]
+   ]
+  },
+  "193": {
+   "value": "function(N,Q,h,t,P,a,X,f,A,g,n,w,I,Na,k){{k=44;while(k!=40)if(k==27)t=t>0?t:1,X=0,n=P[v],k=80;else if(k==80)k=93;else if",
+   "count": 6,
+   "arities": {
+    "1": 3,
+    "5": 3
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     193
+    ],
+    [
+     193,
+     82,
+     39,
+     31,
+     87
+    ],
+    [
+     193
+    ]
+   ]
+  },
+  "56": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     56
+    ]
+   ]
+  },
+  "363": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     363
+    ]
+   ]
+  },
+  "114": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     114
+    ]
+   ]
+  },
+  "84": {
+   "value": "[object HTMLIFrameElement]",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     84
+    ]
+   ]
+  },
+  "401": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     401
+    ]
+   ]
+  },
+  "338": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     338
+    ]
+   ]
+  },
+  "477": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     477
+    ]
+   ]
+  },
+  "367": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     367
+    ]
+   ]
+  },
+  "25": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     25
+    ]
+   ]
+  },
+  "9": {
+   "value": "length",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     9
+    ]
+   ]
+  },
+  "69": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     69
+    ]
+   ]
+  },
+  "78": {
+   "value": "appendChild",
+   "count": 2,
+   "arities": {
+    "1": 2
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     78
+    ],
+    [
+     78
+    ]
+   ]
+  },
+  "3": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     3
+    ]
+   ]
+  },
+  "450": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     450
+    ]
+   ]
+  },
+  "5": {
+   "value": "40",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     5
+    ]
+   ]
+  },
+  "26": {
+   "value": "[object HTMLBodyElement]",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     26
+    ]
+   ]
+  },
+  "102": {
+   "value": "_",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     102
+    ]
+   ]
+  },
+  "120": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     120
+    ]
+   ]
+  },
+  "52": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     52
+    ]
+   ]
+  },
+  "16": {
+   "value": "41",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     16
+    ]
+   ]
+  },
+  "444": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     444
+    ]
+   ]
+  },
+  "66": {
+   "value": "59,250,77,124,90,103,113,57,251,53,107,98,22,34,5,87,94,46,90,37,58,86,125,33,120,76,72,130,18,55,4,102,212,32,7,68,15,1",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     66
+    ]
+   ]
+  },
+  "58": {
+   "value": "tT",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     58
+    ]
+   ]
+  },
+  "126": {
+   "value": "function(N,Q,h,t,P){q(N,(Q=(t=(P=K(N,20),Z(F,20)),B(S,P)),h=l(D,t),t),h%Q)}",
+   "count": 1,
+   "arities": {
+    "3": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     126,
+     252,
+     93
+    ]
+   ]
+  },
+  "406": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     406
+    ]
+   ]
+  },
+  "117": {
+   "value": "M",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     117
+    ]
+   ]
+  },
+  "205": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     205
+    ]
+   ]
+  },
+  "108": {
+   "value": "3",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     108
+    ]
+   ]
+  },
+  "33": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     33
+    ]
+   ]
+  },
+  "4": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     4
+    ]
+   ]
+  },
+  "31": {
+   "value": "12",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     31
+    ]
+   ]
+  },
+  "106": {
+   "value": "function(N,Q,h,t,P,a){(h=(P=(a=Z(N,(Q=Z(N,9),8)),Z)(Y,20),t=B(N,a),l(N,Q))>t,eR)(P,F,+h)}",
+   "count": 1,
+   "arities": {
+    "4": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     106,
+     464,
+     49,
+     144
+    ]
+   ]
+  },
+  "441": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     441
+    ]
+   ]
+  },
+  "228": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     228
+    ]
+   ]
+  },
+  "377": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     377
+    ]
+   ]
+  },
+  "101": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     101
+    ]
+   ]
+  },
+  "23": {
+   "value": "r4",
+   "count": 2,
+   "arities": {
+    "1": 2
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     23
+    ],
+    [
+     23
+    ]
+   ]
+  },
+  "32": {
+   "value": ",,,,,,,,,1,1,,,1,,,,,,,,,,,,,,,,,,,1,,,,,,,,1,1,,1,,1,,,,,,,,,,,,,,1,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     32
+    ]
+   ]
+  },
+  "85": {
+   "value": "10",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     85
+    ]
+   ]
+  },
+  "95": {
+   "value": "1",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     95
+    ]
+   ]
+  },
+  "24": {
+   "value": "prototype",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     24
+    ]
+   ]
+  },
+  "172": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     172
+    ]
+   ]
+  },
+  "404": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     404
+    ]
+   ]
+  },
+  "277": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     277
+    ]
+   ]
+  },
+  "13": {
+   "value": "CD",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     13
+    ]
+   ]
+  },
+  "49": {
+   "value": "undefined",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     49
+    ]
+   ]
+  },
+  "20": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     20
+    ]
+   ]
+  },
+  "287": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     287
+    ]
+   ]
+  },
+  "201": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     201
+    ]
+   ]
+  },
+  "94": {
+   "value": "88,4",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     94
+    ]
+   ]
+  },
+  "144": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     144
+    ]
+   ]
+  },
+  "36": {
+   "value": "204,170,26,123",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     36
+    ]
+   ]
+  },
+  "77": {
+   "value": "45",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     77
+    ]
+   ]
+  },
+  "197": {
+   "value": "",
+   "count": 1,
+   "arities": {
+    "1": 1
+   },
+   "writes": 0,
+   "target_positions": {},
+   "samples": [
+    [
+     197
+    ]
+   ]
+  }
+ }
+}
