@@ -61,7 +61,7 @@ def find_name(s: str, upto: int, vm: str):
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
-          writes=False):
+          writes=False, killswitch=False):
     r = find_reader(src)
     name, params = find_name(src, r["start"], r["vm"])
     seg = src[r["start"]:r["start"] + 2600]
@@ -156,11 +156,12 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         src = src.replace(boot_old, boot_new)
 
     info_writer = {}
-    if writes:
+    if writes or killswitch:
         # The field writer is recognisable by its switch on the bit-pointer and concat ids;
         # a build ships several copies of it (they are all reached from different paths), so
         # patch every copy. Params are (fieldId, vm, value).
         cop = 0
+        k = 0
         for m in reversed(list(re.finditer(r"switch\(!\((\w+)==(\d+)\u007c\u007c\1==(\d+)\)\)", src))):
             name_w, fid, id_ptr, id_cat = m.group(1), m.group(1), m.group(2), m.group(3)
             fn = None
@@ -174,16 +175,32 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             val = params_w[2]
             push = ("[" + fid + ",(" + val + "&&" + val + ".length)|0,(function(x){try{return "
                     "JSON.stringify(x)}catch(e){return String(x)}})(" + val + ")]")
-            inject = ("window.__wr=window.__wr||[],(" + fid + "!==" + id_ptr + "&&" + fid
-                      + "!==" + id_cat + ")&&window.__wr.push(" + push + ");")
+            if killswitch:
+                # self-identifying probe: copy #k aborts the run when window.__kill === k, so
+                # the live copy can be found from the token alone (no cross-realm state).
+                inject = ("(window.__kill===" + str(k) + ")&&(function(){throw 0})();")
+            else:
+                # log on the VM instance, not on `window`: the patched text runs in a realm
+                # the page may not be able to enumerate, but the VM object is shared by
+                # reference, so the log is reachable from whichever realm holds `__vmref`.
+                vmp = params_w[1]
+                inject = (vmp + ".__wr=" + vmp + ".__wr||[],(" + fid + "!==" + id_ptr + "&&"
+                          + fid + "!==" + id_cat + ")&&" + vmp + ".__wr.push(" + push + ");")
+            k += 1
             if inject in src[f.end():f.end() + 200]:
                 continue
             src = src[:f.end()] + inject + src[f.end():]
             cop += 1
         if not cop:
             raise SystemExit("writer anchor not found")
-        info_writer = {"writers_patched": cop, "skip_ids": [id_ptr, id_cat]}
+        info_writer = {"writers_patched": cop, "skip_ids": [id_ptr, id_cat],
+                       "mode": "killswitch" if killswitch else "writes"}
 
+    # marker: proves the copy the page is running is *this* text. Some loads end up executing
+    # a pristine copy (the page's own bootguard wins the race), and without the marker that is
+    # indistinguishable from "nothing to log".
+    if "window.__MINE=1;" not in src:
+        src = src + "window.__MINE=1;"
     info = {"reader": name, "params": params[:3], "bits": bits_name, "flag": flag_name,
             "cache_field": cache_field, "vfield": vfield, "prog_field": prog_field,
             "seed_field": seed_id, "seed_call": seed_call}

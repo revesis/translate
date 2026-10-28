@@ -873,3 +873,80 @@ Two robustness fixes landed with these runs: the boot anchor now accepts `length
 the old pattern at all), and `--fields` retries the mint up to three times when the write log
 comes back empty.
 
+
+## 21. Shipping-path availability, re-checked
+
+The research instruments above are not the product; this is what the shipped path measured.
+
+In-process signer (`bgr_sidecar.LocalSigner`, the `gt_server` embed):
+
+```
+signer ready in 11.6s
+mint 1: token_len=1432  build=FhxsKBPKEL3Q_  in 4.6s
+mint 2: token_len=1425  build=FhxsKBPKEL3Q_  in 2.8s
+mint 3: token_len=1408  build=FhxsKBPKEL3Q_  in 2.7s
+mint 4: token_len=1405  build=FhxsKBPKEL3Q_  in 1.3s
+mint 5: token_len=1439  build=EONwmJdvD0_    in 7.5s
+mint 6: token_len=1447  build=EONwmJdvD0_    in 3.1s
+mint 7: token_len=1428  build=EONwmJdvD0_    in 5.6s
+trusted-range: 7/7
+```
+
+End to end through `ImageTranslator`, twice on the same image:
+
+```
+1: found_text=True detected=en in 3.6s
+   text='Backup job failed on node db-07 ...'
+   translation='节点 db-07 上的备份作业失败 ...'
+2: found_text=True detected=en in 2.9s   (same text/translation)
+```
+
+Both HTTP surfaces as well (`python3 bgr_sidecar.py --port …`):
+
+```
+GET  /health  -> {"ok": true, "build": "FhxsKBPKEL3Q_…", "age_s": 23.8, "ua": "…"}
+POST /sign    -> token_len 1423, build Fhxs…, sid yes, bl yes
+```
+
+and the refresh path that matters when the build rotates under a running page - four mints with a
+forced `/refresh` between each:
+
+```
+before refresh:   1429   after #1: 1425   after #2: 1416   after #3: 1439     (build EONwm…)
+```
+
+Conclusion: the shipped path is healthy across both build pairs and survives refreshes; mint
+latency is 1.3-8.5 s, one image translation 3-4 s. **The instrument flakiness described in the
+research sections does not touch it**: the sidecar evaluates Google's pristine interpreter, so the
+"which writer copy / which realm" problem cannot arise there.
+
+## 22. Which writer copy is live: all of them (probe), and one open flakiness
+
+`--writers` gives every writer copy a self-identifying abort (`(window.__kill===k)&&(function(){throw 0})()`)
+and mints once per k, so the live copy is visible from the token length alone - no cross-realm
+state involved.
+
+```
+build FhxsKBPKEL3Q_, 3 writer copies, 5 realms visible
+        control: token_len=1169  ';6Pa49qzQAAYLd2XrK3df…'
+    kill copy 0: token_len=21    'E:undefined:undefined'
+    kill copy 1: token_len=21    'E:undefined:undefined'
+    kill copy 2: token_len=21    'E:undefined:undefined'
+  control after: token_len=1169  ';Fgi4CFLQAAYLd2XrK3df…'
+```
+
+Every copy fires during a normal run, and the run recovers afterwards (the "control after" mint is
+normal), so the empty write logs were **not** an anchor-coverage problem: at least one live copy is
+always patched.
+
+What is still unexplained: on some page loads the patched copy installs (a marker appended to the
+source proves the eval ran, `window.__MINE`) and produces tokens, yet none of its instrumentation
+fires - no reader hits, no field writes, no boot state, in any realm we can enumerate, and no
+`/js/bg/` request is made either (Fetch served zero). The same build, one load later, is fully
+instrumented. The symptom is recorded here rather than guessed at: `--fields` reports
+`stage: not-mine` when the eval did not take, and an empty log otherwise, and the runner retries
+three times.
+
+Practical rule for the research line: **one page load, one attempt, retry the load** - do not trust
+an empty capture, and never compare two dumps that came from different loads (the program itself
+is per-load, section 15).

@@ -51,6 +51,7 @@ JS = r"""(async () => {
   try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
   const VM = window.ridgeslice;
   if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
   try { delete window.ridgeslice; } catch (e) {}
   const noop = () => {};
   const api = await new Promise((res, rej) => {
@@ -137,6 +138,7 @@ AB_JS = r"""(async () => {
   try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
   const VM = window.ridgeslice;
   if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
   try { delete window.ridgeslice; } catch (e) {}
   const noop = () => {};
   const mint = async () => {
@@ -182,6 +184,7 @@ TWICE_JS = r"""(async () => {
   try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
   const VM = window.ridgeslice;
   if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
   try { delete window.ridgeslice; } catch (e) {}
   const noop = () => {};
   const realms = [window];
@@ -237,6 +240,7 @@ FIELDS_JS = r"""(async () => {
   try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
   const VM = window.ridgeslice;
   if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
   try { delete window.ridgeslice; } catch (e) {}
   const noop = () => {};
   const realms = [];
@@ -259,8 +263,12 @@ FIELDS_JS = r"""(async () => {
     walk(window);
     let best = null;
     for (const w of realms) {
-      try { if (!best && (w.__wr || []).length) best = w.__wr.slice(); } catch (e) {}
-      try { w.__wr = []; } catch (e) {}
+      try {
+        const log = (w.__vmref && w.__vmref.__wr) || w.__wr;
+        if (!best && log && log.length) best = log.slice();
+        if (w.__vmref && w.__vmref.__wr) w.__vmref.__wr = [];
+        w.__wr = [];
+      } catch (e) {}
     }
     return best || [];
   };
@@ -288,10 +296,61 @@ FIELDS_JS = r"""(async () => {
 })()"""
 
 
+WRITERS_JS = r"""(async () => {
+  const arr = %s;
+  const src = %s;
+  const freq = %s;
+  const nCopies = %s;
+  try { delete window.ridgeslice; } catch (e) {}
+  let evalErr = null;
+  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  const VM = window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  if (!window.__MINE) return JSON.stringify({ stage: 'not-mine' });
+  try { delete window.ridgeslice; } catch (e) {}
+  const noop = () => {};
+  const realms = [window];
+  const walk = (w) => {
+    let frames = [];
+    try { frames = Array.from(w.document.querySelectorAll('iframe')); } catch (e) { return; }
+    for (const f of frames) {
+      try { const c = f.contentWindow; if (c) { realms.push(c); walk(c); } } catch (e) {}
+    }
+  };
+  const setKill = (k) => {
+    walk(window);
+    for (const w of realms) { try { w.__kill = k; } catch (e) {} }
+  };
+  const mint = async () => {
+    const api = await new Promise((res, rej) => {
+      try { VM.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+      catch (e) { rej(e); }
+    });
+    return await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
+  };
+  const out = [];
+  const control = await mint();
+  out.push({ k: -1, len: control.length, head: control.slice(0, 24) });
+  for (let k = 0; k < nCopies; k++) {
+    setKill(k);
+    let tok = '';
+    try { tok = await mint(); } catch (e) { tok = 'THROW'; }
+    out.push({ k: k, len: String(tok).length, head: String(tok).slice(0, 24) });
+  }
+  setKill(-1);
+  let after = '';
+  try { after = await mint(); } catch (e) { after = 'THROW'; }
+  out.push({ k: -2, len: String(after).length, head: String(after).slice(0, 24) });
+  return JSON.stringify({ runs: out, realms: realms.length });
+})()"""
+
+
 class CS(ChromeSession):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self.doc_request = None
+        self.body: bytes = b""
+        self.served: list = []
 
     async def send(self, method, **params):
         self._id += 1
@@ -312,6 +371,20 @@ class CS(ChromeSession):
                             fut.set_exception(Exception(str(msg["error"])))
                         else:
                             fut.set_result(msg.get("result", {}))
+                elif msg.get("method") == "Fetch.requestPaused":
+                    p = msg["params"]
+                    url = p.get("request", {}).get("url", "")
+                    self.served.append(url)
+                    if "/js/bg/" in url and self.body:
+                        # serve the patched interpreter for the by-hash request too: if the VM
+                        # fetches its own copy, every patch in arr[5][-1] is inert without this
+                        await self.send("Fetch.fulfillRequest", requestId=p["requestId"],
+                                        responseCode=200,
+                                        responseHeaders=[{"name": "content-type",
+                                                          "value": "application/javascript; charset=utf-8"}],
+                                        body=base64.b64encode(self.body).decode())
+                    else:
+                        await self.send("Fetch.continueRequest", requestId=p["requestId"])
                 elif msg.get("method") == "Network.responseReceived":
                     p = msg["params"]
                     if p.get("type") == "Document" and self.doc_request is None:
@@ -331,13 +404,14 @@ def parse_material(html: str) -> str:
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
               twice: bool = False, fields: bool = False, same: bool = False,
-              mutate: int | None = None) -> None:
+              mutate: int | None = None, writers: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
     await cs.start()
     try:
         await cs.send("Network.enable")
+        await cs.send("Fetch.enable", patterns=[{"urlPattern": "*js/bg/*", "requestStage": "Request"}])
         await cs.navigate(URL, settle=7)
         if not cs.doc_request:
             raise SystemExit("no document response captured")
@@ -347,11 +421,25 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
             html = base64.b64decode(html).decode("utf-8", "replace")
         arr = json.loads("[" + (parse_material(html)[4:]))
         plain = arr[5][-1]
+        print(f"served /js/bg requests: {len([u for u in cs.served if '/js/bg/' in u])}")
         print(f"build: hash={arr[2]} blob={len(arr[0])} interp={len(plain)} ts={arr[4]}")
-        src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab or fields),
-                                  sweep=sweep or ab, writes=fields)
+        if writers:
+            src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, killswitch=True)
+        else:
+            src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab or fields),
+                                      sweep=sweep or ab, writes=fields)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
+        cs.body = src.encode()
         print("patch:", {k: v for k, v in info.items() if k != "params"})
+        if writers:
+            n = int(info.get("writers_patched") or 0)
+            d = json.loads(await cs.eval(WRITERS_JS % (json.dumps(arr), json.dumps(src),
+                                                      json.dumps(freq), str(n))))
+            print({k: v for k, v in d.items() if k != "runs"})
+            for run in d.get("runs") or []:
+                tag = {-1: "control", -2: "control after"}.get(run["k"], f"kill copy {run['k']}")
+                print(f"  {tag:>14}: token_len={run['len']} head={run['head']!r}")
+            return
         if fields:
             fb = freq if (same or mutate is not None) else (
                 freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B")
@@ -489,6 +577,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--writers", action="store_true",
+                    help="probe which writer copy is live by aborting each in turn")
     ap.add_argument("--mutate", type=int, default=None,
                     help="with --fields: flip plaintext program byte N before the second mint")
     ap.add_argument("--same", action="store_true",
@@ -502,7 +592,7 @@ def main() -> None:
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields, a.same,
-                    a.mutate))
+                    a.mutate, a.writers))
 
 
 if __name__ == "__main__":
