@@ -242,7 +242,16 @@ not natives). Full chromium is required.
 
 ## 8. Open questions for the serializer work
 
-1. Capture field writes *during* serialization instead of after. Two known-good facts
+1. Capture field writes *during* serialization instead of after - **attempted, blocked**.
+   The VM instance is closure-local: scanning every property of every global in the
+   frame realm finds no reference to it (`globalRefs: []`, no VM global at all by that
+   name in the frame - the `ridgeslice` object our own code holds lives in the *outer*
+   realm). The only way to reach it is a call stack, and constructing `Error`s inside
+   the `Array.prototype.push` hook - even one per mint, to cache the instance - flips
+   the token to degraded (3095 chars). A pure counting wrapper on `push` stays trusted
+   (1420), so the trigger is the Error construction, not the wrapper.
+
+   Two known-good facts
    to build on: the VM is **reusable inside one page** (three consecutive mints all
    returned trusted-length tokens), and each slot's `create` is a per-instance closure,
    so arming breakpoints on a *previous* instance's factories catches nothing (and
