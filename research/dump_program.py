@@ -1,0 +1,305 @@
+"""Recover the botguard program (`NU`) as plaintext and validate it against the reader log.
+
+Usage: python3 research/dump_program.py [--sweep] [--port N] [--out DIR]
+
+What it does, in one page load:
+
+1. reads the page document body over CDP and parses `"mnsUbf"` out of it, so the program
+   blob and the interpreter come from the *same* build pair (builds rotate per load; mixing
+   a blob from one pair with an interpreter from another makes the inner program fail with
+   `FNLSyntaxError`);
+2. patches the interpreter (research/bgpatch.py), recomputes `arr[2]` = base64url(sha256) so
+   the integrity gate still passes, and evaluates the patched text as the page's *first*
+   string eval (the page enforces Trusted Types, a second eval of the same string is
+   refused);
+3. mints once with `blockcache` on: every natural read is logged, and each 64-bit block whose
+   keystream the reader just regenerated is read out in full;
+4. rebuilds the program buffer from those blocks, then bit-slices the buffer at every logged
+   read position and compares with the value the VM itself returned.
+
+`--sweep` instead forces the reader over every 8-bit offset in ascending order. That is the
+negative experiment: the keystream factory is stateful, so a block's key depends on how many
+blocks were regenerated before it, and the sweep only agrees with the natural plaintext for
+the blocks whose visit order it happens to reproduce (measured: divergence from block 43).
+"""
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+
+from bgr_sidecar import DEFAULT_UA, ChromeSession  # noqa: E402
+import bgpatch  # noqa: E402
+
+URL = "https://translate.google.com/?sl=auto&tl=zh-CN&op=images"
+CHROME = "/usr/bin/google-chrome-stable"
+
+JS = r"""(async () => {
+  const arr = %s;
+  const src = %s;
+  const freq = %s;
+  const sweepNow = %s;
+  window.__sweepNow = sweepNow;
+  try { delete window.ridgeslice; } catch (e) {}
+  let evalErr = null;
+  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  const VM = window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  try { delete window.ridgeslice; } catch (e) {}
+  const noop = () => {};
+  const api = await new Promise((res, rej) => {
+    try { VM.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+    catch (e) { rej(e); }
+  });
+  const tok = await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
+  // the VM assembles a copy of the interpreter per realm, so the instrumentation state can
+  // live in the page, in a frame, or in a detached frame - scan everything we can see.
+  const realms = [window];
+  const walk = (w) => {
+    let frames = [];
+    try { frames = Array.from(w.document.querySelectorAll('iframe')); } catch (e) { return; }
+    for (const f of frames) {
+      try { const c = f.contentWindow; if (c) { realms.push(c); walk(c); } } catch (e) {}
+    }
+  };
+  walk(window);
+  let found = null, states = [];
+  for (const w of realms) {
+    try {
+      const n = Object.keys(w.__prog || {}).length;
+      states.push({ prog: n, rd: (w.__rd || []).length, dump: (w.__dump || []).length });
+      if (!found && (n || (w.__dump || []).length || (w.__rd || []).length)) found = w;
+    } catch (e) {}
+  }
+  if (!found) return JSON.stringify({ tok: tok.length, head: tok.slice(0, 60), states: states,
+                                      err: 'no instrumentation state in any realm' });
+  const meta = found.__vmeta || {};
+  const blocks = [];
+  for (const k of Object.keys(found.__prog || {})) blocks.push([parseInt(k, 10), found.__prog[k]]);
+  return JSON.stringify({ tok: tok.length, head: tok.slice(0, 24), V: meta.V,
+                          nu: (meta.prog || []).length, seed: meta.seed,
+                          nblocks: blocks.length, blocks: blocks,
+                          sweep: found.__dump || [], sweepErr: String(found.__sweepErr || ''),
+                          log: found.__rd || [], vals: found.__rv || [] });
+})()"""
+
+
+def validate(buf: bytearray, log: list, vals: list) -> dict:
+    """Bit-slice the recovered buffer at every logged read and compare with the VM's value.
+
+    Reads with the decrypt flag off (the 32-bit seed fetch) are skipped by construction:
+    the recovered buffer is always decrypted.
+    """
+    bits = []
+    for byte in buf:
+        for i in range(7, -1, -1):
+            bits.append((byte >> i) & 1)
+    ok = bad = skipped = 0
+    first = None
+    for entry, val in zip(log, vals):
+        cnt, flag, start = int(entry[0]), int(entry[1]), int(entry[2])
+        logged = int(val[1]) if isinstance(val, list) else int(val)
+        if flag == 0:
+            skipped += 1
+            continue
+        if start + cnt > len(bits):
+            continue
+        got = 0
+        for i in range(cnt):
+            got = (got << 1) | bits[start + i]
+        if got == logged:
+            ok += 1
+        else:
+            bad += 1
+            if first is None:
+                first = {"start": start, "bits": cnt, "logged": logged, "recovered": got}
+    return {"match": ok, "mismatch": bad, "skipped_plaintext": skipped, "first_mismatch": first}
+
+
+AB_JS = r"""(async () => {
+  const arr = %s;
+  const src = %s;
+  const freq = %s;
+  try { delete window.ridgeslice; } catch (e) {}
+  let evalErr = null;
+  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  const VM = window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  try { delete window.ridgeslice; } catch (e) {}
+  const noop = () => {};
+  const mint = async () => {
+    const api = await new Promise((res, rej) => {
+      try { VM.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+      catch (e) { rej(e); }
+    });
+    return await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
+  };
+  const realms = [window];
+  const walk = (w) => {
+    let frames = [];
+    try { frames = Array.from(w.document.querySelectorAll('iframe')); } catch (e) { return; }
+    for (const f of frames) {
+      try { const c = f.contentWindow; if (c) { realms.push(c); walk(c); } } catch (e) {}
+    }
+  };
+  window.__sweepNow = false;
+  const tok1 = await mint();
+  walk(window);
+  let st = null;
+  for (const w of realms) { try { if (!st && (w.__rd || []).length) st = w; } catch (e) {} }
+  if (!st) return JSON.stringify({ stage: 'no log', tok1: tok1.length });
+  const log = (st.__rd || []).slice(), vals = (st.__rv || []).slice();
+  const meta = st.__vmeta || {};
+  window.__sweepNow = true;
+  let tok2 = '';
+  try { tok2 = await mint(); } catch (e) { tok2 = 'THROW'; }
+  let sw = null;
+  for (const w of realms) { try { if (!sw && (w.__dump || []).length) sw = w; } catch (e) {} }
+  return JSON.stringify({ tok1: tok1.length, tok2: String(tok2).length, V: meta.V,
+                          nu: (meta.prog || []).length, seed: meta.seed,
+                          sweep: (sw && sw.__dump) || [], log: log, vals: vals });
+})()"""
+
+
+class CS(ChromeSession):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.doc_request = None
+
+    async def send(self, method, **params):
+        self._id += 1
+        mid = self._id
+        fut = self._loop.create_future()
+        self._pending[mid] = fut
+        await self.ws.send(json.dumps({"id": mid, "method": method, "params": params}))
+        return await asyncio.wait_for(fut, timeout=900)
+
+    async def _read(self):
+        try:
+            async for raw in self.ws:
+                msg = json.loads(raw)
+                if "id" in msg:
+                    fut = self._pending.pop(msg["id"], None)
+                    if fut and not fut.done():
+                        if "error" in msg:
+                            fut.set_exception(Exception(str(msg["error"])))
+                        else:
+                            fut.set_result(msg.get("result", {}))
+                elif msg.get("method") == "Network.responseReceived":
+                    p = msg["params"]
+                    if p.get("type") == "Document" and self.doc_request is None:
+                        self.doc_request = p["requestId"]
+        except Exception:
+            pass
+
+
+def parse_material(html: str) -> str:
+    i = html.find('"mnsUbf":')
+    if i < 0:
+        raise SystemExit("mnsUbf missing from the document body")
+    start = html.index('"', i + len('"mnsUbf":'))
+    material, _ = json.JSONDecoder().raw_decode(html[start:])
+    return material
+
+
+async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False) -> None:
+    freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
+        os.path.join(HERE, "freq.txt")) else "hello"
+    cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
+    await cs.start()
+    try:
+        await cs.send("Network.enable")
+        await cs.navigate(URL, settle=7)
+        if not cs.doc_request:
+            raise SystemExit("no document response captured")
+        body = await cs.send("Network.getResponseBody", requestId=cs.doc_request)
+        html = body.get("body", "")
+        if body.get("base64Encoded"):
+            html = base64.b64decode(html).decode("utf-8", "replace")
+        arr = json.loads("[" + (parse_material(html)[4:]))
+        plain = arr[5][-1]
+        print(f"build: hash={arr[2]} blob={len(arr[0])} interp={len(plain)} ts={arr[4]}")
+        src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab),
+                                  sweep=sweep or ab)
+        arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
+        print("patch:", {k: v for k, v in info.items() if k != "params"})
+        if ab:
+            d = json.loads(await cs.eval(AB_JS % (json.dumps(arr), json.dumps(src),
+                                                   json.dumps(freq))))
+            dump, nbytes = d.get("sweep") or [], d.get("nu") or 0
+            print({k: v for k, v in d.items() if k not in ("sweep", "log", "vals")})
+            if not dump or not nbytes:
+                return
+            buf = bytearray(x & 255 for x in dump[:nbytes])
+            print("sweep coverage:", len(buf), "/", nbytes)
+            print("validation:", validate(buf, d.get("log") or [], d.get("vals") or []))
+            open(os.path.join(out, "program_sweep_ab.bin"), "wb").write(bytes(buf))
+            json.dump(d, open(os.path.join(out, "run_sweep_ab.json"), "w"))
+            return
+        d = json.loads(await cs.eval(JS % (json.dumps(arr), json.dumps(src), json.dumps(freq),
+                                            "true" if sweep else "false")))
+        print({k: v for k, v in d.items() if k not in ("blocks", "sweep", "log", "vals")})
+        nbytes = d.get("nu") or 0
+        if log_only:
+            blockhit = set()
+            for entry in d.get("log") or []:
+                cnt, start = int(entry[0]), int(entry[2])
+                for b in range(start // 64, (start + cnt - 1) // 64 + 1):
+                    blockhit.add(b)
+            total = (nbytes + 7) // 8
+            print(f"log-only: reads={len(d.get('log') or [])} blocks touched={len(blockhit)}"
+                  f"/{total} ({round(len(blockhit) / max(total, 1), 4)})")
+            return
+        if sweep:
+            dump = d.get("sweep") or []
+            if not dump or not nbytes:
+                return
+            buf = bytearray(x & 255 for x in dump[:nbytes])
+            print("sweep coverage:", len(buf), "/", nbytes)
+        else:
+            blocks = d.get("blocks") or []
+            if not blocks or not nbytes:
+                return
+            buf = bytearray(nbytes)
+            mask = bytearray(nbytes)
+            for idx, vals in blocks:
+                for k, val in enumerate(vals):
+                    pos = idx * 8 + k
+                    if pos < nbytes:
+                        buf[pos] = int(val) & 255
+                        mask[pos] = 1
+            print("blocks:", len(blocks), "bytes known:", sum(mask), "/", nbytes,
+                  round(sum(mask) / nbytes, 4))
+        print("validation:", validate(buf, d.get("log") or [], d.get("vals") or []))
+        os.makedirs(out, exist_ok=True)
+        tag = "sweep" if sweep else "blocks"
+        open(os.path.join(out, f"program_{tag}.bin"), "wb").write(bytes(buf))
+        json.dump({"build": {"hash": arr[2], "blob": len(arr[0]), "interp": len(plain)},
+                   "info": info, "run": d}, open(os.path.join(out, f"run_{tag}.json"), "w"))
+        print("wrote", os.path.join(out, f"program_{tag}.bin"),
+              "sha256", hashlib.sha256(bytes(buf)).hexdigest()[:16])
+    finally:
+        await cs.stop()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sweep", action="store_true", help="force a full ascending sweep (negative control)")
+    ap.add_argument("--port", type=int, default=10220)
+    ap.add_argument("--out", default="/tmp/bg-dump")
+    ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--ab", action="store_true",
+                    help="mint once naturally then once with the forced sweep (negative control)")
+    a = ap.parse_args()
+    os.makedirs(a.out, exist_ok=True)
+    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab))
+
+
+if __name__ == "__main__":
+    main()

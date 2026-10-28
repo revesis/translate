@@ -486,6 +486,9 @@ That also explains the read gaps: fields are created lazily by `R` and only pull
 program when dereferenced (`z` -> `.value` -> `w` -> `.create()`), so the two skipped bands
 are read by that lazy path rather than by `JY` during the initial sweep.
 
+**Retracted in section 14** - `create()` never touches the program, and the reader is the only
+reader. Keep the writer description above, drop the explanation at the end.
+
 ## 13. Keystream capture does not give offline decryption (negative result)
 
 The keystream is observable: logging `L.hq` right after it is regenerated gives eight bytes
@@ -512,3 +515,192 @@ the lazy field path (`R`/`T` -> `.create()`), not by keystream math.
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
 handlers seen on the stack (`cH` -> `eT` -> `z`/`k`).
+
+## 14. Corrections: the lazy field path does not read the program
+
+Two claims in sections 12 and 13 are wrong, and everything below depends on the fix.
+
+**1. There is exactly one program read site in the interpreter.** Counting
+`<program>[` occurrences in two builds:
+
+```
+/tmp/interp_orig.js  (FhxsKBPKEL3Q_, 66505 chars)  .NU[ -> 1 hit, at offset 43743
+/tmp/interp_page.js  (EONwmJdvD0_,  66684 chars)  .x9[ -> 1 hit, at offset 34489
+```
+
+Both are the `r = t.NU[u]` / `V = d.x9[S]` inside the reader. Nothing else in the 66 KB of
+interpreter code indexes the program, so no other accessor can pull a byte out of it. The
+two skipped bands of section 11 are simply **not consumed by that run**; they are not read
+"by the lazy path".
+
+**2. `create()` is a counter-based byte factory, not a program accessor.** The `create` the
+field objects install (Fhxs build, verbatim):
+
+```js
+P[J.T] = function(n){ G=(c=(G+=6+7*Y,n), 7+2*(G&-8)-2*(G^7)) + (~G&7) }
+```
+
+`G`, `c`, `Y` are closure state; the string `NU` never appears in the body. So
+`R(...) -> .create()` cannot fill anything: it manufactures numbers out of a small PRNG.
+The earlier explanation of the gaps is withdrawn.
+
+Consequence: coverage can only be raised by making the reader *regenerate more blocks*, not
+by finding a second reader.
+
+## 15. Builds rotate per load, and so does everything inside the interpreter
+
+Four page loads in about 40 minutes produced three different interpreter hashes, and the same
+hash kept arriving with different program blobs:
+
+| interpreter hash | interp len | blob len observed |
+| --- | --- | --- |
+| `FhxsKBPKEL3Q_7SAGqK2qCBSmJCvn03PW-hnc3EmGb4` | 66505 | 29492 … 30183 |
+| `EONwmJdvD0_rTF3DwpNQuYvLZBRpy3uP7JNRMBuZCNs` | 66684 | 29638 … 30035 |
+| `TsNWy9jFir5dhpfrFwzH2KnV5fIUrB_LPmNheeH61GY` | 66517 | 29892 |
+
+Because the blob length moves on every load, **the program differs per load**: two dumps can
+only be compared inside one page load. Mixing a blob from one load with an interpreter from
+another still parses (the interpreter is integrity-checked against itself, `arr[2] ==
+base64url(sha256(arr[5][-1]))`, verified again here) but the assembled inner program then
+fails with `FNLSyntaxError: Unexpected token …` and the VM returns that as the token - the
+"wrong build pair" signature.
+
+Everything else rotates too, which is why every earlier note that hard-coded a name broke on
+the next build:
+
+| role | Fhxs build | EONwm build |
+| --- | --- | --- |
+| reader | `JY(bits, flag, vm)` | `xG(flag, bits, vm)` |
+| program field | `NU` | `x9` |
+| program length (bits) | `V` | `U` |
+| bit pointer field | 230 | 339 |
+| seed field | 15 | 43 |
+| block keystream cache | `R` | `v` |
+| mask table | `FD` | `TU` |
+| keystream mixer | `WH` | `W9` |
+
+The reader's **parameter order changes between builds**, which is the trap that produced a
+dump of 22 340 bytes of `00`/`01` at first: called as `JY(8, true, vm)` on a build whose
+signature is `(flag, bits, vm)`, the reader read *one bit* per call and the 8-bit stride
+walked the program eight times too fast. `research/bgpatch.py` now reads the roles out of the
+body: the parameter the keystream guard `<name>&&(` tests is the flag, the other of the first
+two is the bit count.
+
+One more page-level gate: the document enforces **Trusted Types** for string evaluation, so
+the interpreter can be `eval`-ed exactly once per page. A second `(0, eval)(src)` of the same
+string is refused with `EvalError: Evaluating a string as JavaScript violates this
+document's Trusted Type assignment requirements` - which looks like "the VM stopped working"
+if you do not print the error. All patching has to happen in the *first* eval of a page.
+
+## 16. Recovering the program: read each block when its keystream is fresh
+
+The count is per run and per build; artifact `program_blocks.bin` for the second row above came
+out with `sha256 587dfec56bc071ec…` (prefix) and is not committed - it is per-build data.
+
+The reader XORs every byte with an 8-byte table that is regenerated whenever the bit pointer
+enters a new 64-bit block:
+
+```js
+L.R != G>>6 && (L.R = G>>6, Y = w(L,15), L.hq = WH(16, L.R, L.i, [0,0,Y[1],Y[2]], 551))
+```
+
+`w(L,15)` pulls from the seed field's factory, i.e. the table is produced by a **stateful
+PRNG**: the key for block *k* depends on how many blocks were regenerated before it, not on
+*k* alone. Two facts follow, and both are measured:
+
+* a blind ascending sweep of the whole program decrypts only the first stretch correctly
+  (section 17);
+* right after a regeneration, that block's 8-byte table is valid for **all eight bytes** of
+  the block, not just the bit the program asked for.
+
+So the instrument reads the whole block at that moment. In the reader's return path, after
+the block cache changed, it walks the eight byte-aligned offsets of the block with a forced
+bit pointer; the pointer store that immediately follows puts the VM's own pointer back, which
+is why the run keeps working long enough to finish the sweep.
+
+Measured (`research/dump_program.py`, block-capture mode, two runs on different builds):
+
+```
+build EONwmJdvD0_ interp 66684, V 176728 bits, nu 22091 bytes
+blocks captured: 2762, bytes known: 22091 / 22091 (1.0)
+validation: match 2761  mismatch 0  skipped_plaintext 1
+
+build EONwmJdvD0_ interp 66684, V 178720 bits, nu 22340 bytes
+blocks captured: 2793, bytes known: 22340 / 22340 (1.0)
+validation: match 2792  mismatch 0  skipped_plaintext 1
+```
+
+"validation" bit-slices the recovered buffer at every position the run's own log recorded and
+compares with the value the VM returned there; the one skipped read is the 32-bit seed fetch,
+which the VM takes with the decrypt flag off and the buffer takes decrypted. Zero mismatches
+across ~2 800 reads is what makes the buffer trustworthy.
+
+Honest limit: this validates the byte the program actually asked for in each block. The other
+seven bytes of a block are produced by the same table through the same code path but are not
+independently confirmed by a second reader, because there is no second reader (section 14).
+
+Reproduce:
+
+```
+python3 research/dump_program.py --port 10220 --out /tmp/bg-dump
+```
+
+The payload fixture can be dropped at `research/freq.txt`; without it a tiny synthetic payload
+is used, which only changes how much of the program the run executes.
+
+## 17. A forced sweep cannot decrypt unvisited blocks (measured)
+
+Same tooling, `--sweep`: mint once naturally (passive log only), then force the reader over
+every 8-bit offset in ascending order on the next mint and compare.
+
+```
+sweep coverage: 22192 / 22192 bytes
+validation: match 523  mismatch 5164  skipped_plaintext 4
+first mismatch: start=2752 bits=8 logged=87 recovered=150
+```
+
+Divergence starts at bit 2752 = block 43 and never recovers: the sweep regenerates blocks
+0,1,2,… in order, while the run regenerates a different sequence, so from the first block the
+run skipped, the PRNG has advanced by a different number of steps and every later table is
+wrong. An earlier run of the same experiment diverged at bit 2784 (block 43) - the boundary
+is stable, the numbers are not.
+
+This closes the offline-decryption question for good: the keystream is not a function of the
+block index alone, so no reordering of reads can reconstruct keys for blocks the VM never
+visited. Section 13's conclusion stands, with a better reason.
+
+## 18. How much does a run actually touch?
+
+`--log-only` (passive log, no block capture), one run:
+
+```
+reads=20174  blocks touched=2201/2778 (79.2 %)   token 1224 chars
+```
+
+So at 64-bit-block granularity a single degraded-length run visits about four fifths of the
+program; the 57.6 % figure in section 11 was measured in *bits* placed by the log, which is
+a stricter and less useful number. The remaining fifth is where section 16's per-block read
+earns its keep - with block capture the same instrumented build ends up walking all blocks,
+because the forced reads push the pointer to block boundaries and the program follows.
+
+## 19. What the recovered program looks like
+
+`program_blocks.bin` from section 16 (22 340 bytes, EONwm build): entropy **7.99 bits/byte**,
+256 distinct byte values, 38.2 % printable bytes, longest printable run 9 characters, no
+`divprotectcache`/`google`/`Boa` strings. So in this build the plaintext program is
+**obfuscated byte data, not assembler-like text** - the readable fragments seen in the 57.6 %
+reconstruction came from the Fhxs build, whose program layout differs.
+
+That changes the next step: decoding this build means finding the record structure inside a
+high-entropy blob (the 8-bit reads the program itself makes are the only hint at framing),
+not reading opcodes out of a printable stream. The instruments that are now in place:
+
+* `research/bgpatch.py` - structural, build-agnostic patcher (entry log, return log, block
+  capture, forced sweep; per-hunk toggles for bisection).
+* `research/dump_program.py` - one-shot runner: same-build-pair material, Trusted-Types-safe
+  single eval, capture, validation, artifact dump. `--log-only`, `--sweep`, `--ab` are the
+  three controls used above.
+
+Next: dump two runs *within one page load* (the VM is reusable, section 8) and diff them -
+differences isolate the input-dependent fields from the fixed program skeleton, which is the
+mapping the serializer needs.
