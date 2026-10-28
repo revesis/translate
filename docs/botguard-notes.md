@@ -1949,3 +1949,24 @@ length encoding - which is the one thing here that is *not* pinned down yet.
 This is as far as the emission side can be pushed without decoding the handler that composes each
 chunk. What it already gives the serializer work: the exact chunk order and the per-chunk byte
 counts for one run, plus the invariant that only field 146's stream reaches the token.
+
+### The marker of section 1 is produced by these emissions, byte for byte
+
+Section 1 measured an 8-byte marker at offset 5 of both token shapes, `00 06 0b 77 65 eb 2b 77`, and
+a `d0` immediately before it. The emission log of run C starts:
+
+```
+field 146 len 1  [208]                     = 0xd0
+field 146 len 2  [0, 6]                    = 0x00 0x06
+field 146 len 6  [11, 119, 101, 235, 43, 119]
+                                           = 0x0b 0x77 0x65 0xeb 0x2b 0x77
+```
+
+which is `d0 | 00 06 0b 77 65 eb 2b 77` - exactly the head that was captured from the wire in
+section 1, now arriving as three separate length-prefixed chunks. That also explains the missing
+bytes in the size accounting: the marker tail is written by a path the emit hook does not see (the
+`concat` the serializer does at encode time, section 2b), which is the 6-7 bytes between
+`emits(146)` and `token_bytes - 2`.
+
+So the head of the token is not a constant that gets prepended at the end - it is emitted first, one
+chunk at a time, by the program.
