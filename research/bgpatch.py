@@ -60,7 +60,8 @@ def find_name(s: str, upto: int, vm: str):
     return best
 
 
-def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False):
+def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
+          writes=False):
     r = find_reader(src)
     name, params = find_name(src, r["start"], r["vm"])
     seg = src[r["start"]:r["start"] + 2600]
@@ -150,7 +151,38 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
             raise SystemExit("boot site not unique (%d)" % src.count(boot_old))
         src = src.replace(boot_old, boot_new)
 
+    info_writer = {}
+    if writes:
+        # The field writer is recognisable by its switch on the bit-pointer and concat ids;
+        # a build ships several copies of it (they are all reached from different paths), so
+        # patch every copy. Params are (fieldId, vm, value).
+        cop = 0
+        for m in reversed(list(re.finditer(r"switch\(!\((\w+)==(\d+)\u007c\u007c\1==(\d+)\)\)", src))):
+            name_w, fid, id_ptr, id_cat = m.group(1), m.group(1), m.group(2), m.group(3)
+            fn = None
+            for f in re.finditer(r"([\w$]+)=function\(([^)]*)\)\{", src[:m.start()]):
+                params_w = [x.strip() for x in f.group(2).split(",")]
+                if fid in params_w and len(params_w) >= 3:
+                    fn = (f, params_w)
+            if not fn:
+                continue
+            f, params_w = fn
+            val = params_w[2]
+            inject = ("window.__wr=window.__wr||[],(" + fid + "!==" + id_ptr + "&&" + fid
+                      + "!==" + id_cat + ")&&window.__wr.push([" + fid + ",(" + val + "&&"
+                      + val + ".length)|0,(function(x){try{return JSON.stringify(x)}"
+                      "catch(e){return String(x)}})(" + val + ")]);")
+            if inject in src[f.end():f.end() + 200]:
+                continue
+            src = src[:f.end()] + inject + src[f.end():]
+            cop += 1
+        if not cop:
+            raise SystemExit("writer anchor not found")
+        info_writer = {"writers_patched": cop,
+                       "skip_ids": [id_ptr, id_cat]}
+
     info = {"reader": name, "params": params[:3], "bits": bits_name, "flag": flag_name,
             "cache_field": cache_field, "vfield": vfield, "prog_field": prog_field,
             "seed_field": seed_id, "seed_call": seed_call}
+    info.update(info_writer)
     return src, info

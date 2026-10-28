@@ -220,6 +220,55 @@ TWICE_JS = r"""(async () => {
 })()"""
 
 
+FIELDS_JS = r"""(async () => {
+  const arr = %s;
+  const src = %s;
+  const fa = %s;
+  const fb = %s;
+  try { delete window.ridgeslice; } catch (e) {}
+  let evalErr = null;
+  try { (0, eval)(src); } catch (e) { evalErr = String(e).slice(0, 300); }
+  const VM = window.ridgeslice;
+  if (!VM || typeof VM.a !== 'function') return JSON.stringify({ stage: 'install', evalErr: evalErr });
+  try { delete window.ridgeslice; } catch (e) {}
+  const noop = () => {};
+  const realms = [];
+  const walk = (w) => {
+    realms.push(w);
+    let frames = [];
+    try { frames = Array.from(w.document.querySelectorAll('iframe')); } catch (e) { return; }
+    for (const f of frames) {
+      try { const c = f.contentWindow; if (c) walk(c); } catch (e) {}
+    }
+  };
+  const mint = async (freq) => {
+    const api = await new Promise((res, rej) => {
+      try { VM.a(arr[0], (...f) => res(f), true, document.body, noop, [[], []], undefined, false, [noop, noop, noop, noop, noop]); }
+      catch (e) { rej(e); }
+    });
+    return await new Promise((res) => api[0]((t) => res(String(t)), [freq, undefined, undefined, undefined]));
+  };
+  const collect = () => {
+    walk(window);
+    let best = null;
+    for (const w of realms) {
+      try { if (!best && (w.__wr || []).length) best = w.__wr.slice(); } catch (e) {}
+      try { w.__wr = []; } catch (e) {}
+    }
+    return best || [];
+  };
+  collect();
+  const tokA = await mint(fa);
+  const wrA = collect();
+  const tokB = await mint(fb);
+  const wrB = collect();
+  let meta = {};
+  for (const w of realms) { try { if (!meta.V && w.__vmeta) meta = w.__vmeta; } catch (e) {} }
+  return JSON.stringify({ tokA: tokA.length, tokB: tokB.length, V: meta.V,
+                          nu: (meta.prog || []).length, wrA: wrA, wrB: wrB });
+})()"""
+
+
 class CS(ChromeSession):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -262,7 +311,7 @@ def parse_material(html: str) -> str:
 
 
 async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool = False,
-              twice: bool = False) -> None:
+              twice: bool = False, fields: bool = False) -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = CS(CHROME, port, DEFAULT_UA, "/tmp/bg-dump-" + str(port))
@@ -279,10 +328,31 @@ async def run(sweep: bool, port: int, out: str, log_only: bool = False, ab: bool
         arr = json.loads("[" + (parse_material(html)[4:]))
         plain = arr[5][-1]
         print(f"build: hash={arr[2]} blob={len(arr[0])} interp={len(plain)} ts={arr[4]}")
-        src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab),
-                                  sweep=sweep or ab)
+        src, info = bgpatch.patch(plain, blockcache=not (sweep or log_only or ab or fields),
+                                  sweep=sweep or ab, writes=fields)
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("patch:", {k: v for k, v in info.items() if k != "params"})
+        if fields:
+            fb = freq[:-8] + "AAAAAAA1" if len(freq) > 16 else freq + "B"
+            d = json.loads(await cs.eval(FIELDS_JS % (json.dumps(arr), json.dumps(src),
+                                                      json.dumps(freq), json.dumps(fb))))
+            print({k: v for k, v in d.items() if k not in ("wrA", "wrB")})
+            a, b = d.get("wrA") or [], d.get("wrB") or []
+            if not a or not b:
+                return
+            print(f"field writes: A={len(a)} B={len(b)}")
+            differ = [(x, y) for x, y in zip(a, b) if x != y]
+            print("positions differing:", len(differ))
+            for x, y in differ[:12]:
+                print("  A", x[0], x[1], str(x[2])[:70])
+                print("  B", y[0], y[1], str(y[2])[:70])
+            ids = {}
+            for x in a:
+                ids.setdefault(x[0], []).append((x[1], len(x[2] or "")))
+            print("distinct field ids written:", len(ids))
+            print("id -> [(size, json_len)]:", {k: v[:3] for k, v in list(ids.items())[:40]})
+            json.dump(d, open(os.path.join(out, "run_fields.json"), "w"))
+            return
         if twice:
             d = json.loads(await cs.eval(TWICE_JS % (json.dumps(arr), json.dumps(src),
                                                      json.dumps(freq))))
@@ -377,13 +447,15 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10220)
     ap.add_argument("--out", default="/tmp/bg-dump")
     ap.add_argument("--log-only", action="store_true", help="passive log only, no block capture")
+    ap.add_argument("--fields", action="store_true",
+                    help="two mints with different payloads; log and diff every field write")
     ap.add_argument("--twice", action="store_true",
                     help="two mints in one page; compare the two recovered buffers")
     ap.add_argument("--ab", action="store_true",
                     help="mint once naturally then once with the forced sweep (negative control)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice))
+    asyncio.run(run(a.sweep, a.port, a.out, a.log_only, a.ab, a.twice, a.fields))
 
 
 if __name__ == "__main__":

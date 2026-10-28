@@ -722,3 +722,70 @@ not reading opcodes out of a printable stream. The instruments that are now in p
 Next: dump two runs *within one page load* (the VM is reusable, section 8) and diff them -
 differences isolate the input-dependent fields from the fixed program skeleton, which is the
 mapping the serializer needs.
+
+## 20. The field table, logged
+
+`research/bgpatch.py` grew a `writes` hunk: it patches **every copy of the field writer** and
+records `[fieldId, len(value), JSON(value)]` for each write, skipping only the bit-pointer and
+concat sinks (every read stores the pointer, so those two ids would drown everything else).
+
+The writer is recognised by its switch on the pointer and concat ids, not by name - a single
+build ships **three** copies of it, and they do not even agree on the argument order:
+
+```
+switch(!(F==230||F==21))  inside K(b,F,t)    <- field id in the *second* param
+switch(!(b==230||b==21))  inside D(b,F,t)
+switch(!(b==230||b==21))  inside ZS(b,F,t)   <- the one the boot calls
+```
+
+Anchoring on the parameter name, or patching only `D`, silently loses most writes.
+
+Measured, one page load, two mints with payloads that differ by one character
+(`"hello"` vs `"helloB"`, both tokens 1100 chars, `NU` 22 347 bytes):
+
+```
+field writes: A=706  B=706
+positions differing: 5
+  473  4B  A [72,60,133,195]     B [46,32,236,84]
+  474  4B  A [136,68,95,133]     B [31,231,27,193]
+  277  4B  A [135,229,23,59]     B [104,127,164,83]
+   86  0B  A 1793164444493       B 1793164445475        <- wall clock, ms
+  201  4B  A ["hello",null,null,null]   B ["helloB",null,null,null]
+distinct field ids written: 137
+```
+
+So the *content* binding is a single field: 201, which receives the payload string as its
+first element. 473/474/277 change on every sign (four bytes each) and 86 is the clock; the
+other 700-odd writes are identical across the two runs. That is the shape the serializer needs:
+a fixed skeleton plus a handful of per-sign fields.
+
+What the ids carry is not only numbers. A sample of the table from the same run:
+
+```
+  0   "0,function(y,p,X,C,H){D((H=k(y,(p=a((X=B(y,8),2..."   handler source, 76 B
+ 35   "var eval=\"kdggzrisih\";eval"                        the realm's global name
+ 46   ",A,AJ,Aq,BY,Bc,C,Cc,D,E5,F,FD,G,IA,Il,J,Jq,K,Ke..."     208 B property list
+ 18 "contentWindow"   20 "parent"   22 "appendChild"   26 "length"
+ 39 "createElement"   55 "prototype"  57 "Array"       63 "document"
+ 15   [0,0,0] then [1475166842,-778591371,-334337046,null]    seed words
+117   [2048]          146 [184,0,0]      201 {} then ["hello",null,null,null]
+```
+
+Two notes on reading this table:
+
+* `len(value)` is `value.length`, so objects and numbers show 0; the JSON column is the payload.
+  Values that stringify to `undefined` (functions, `undefined`) come back as `null` - the
+  logger is lossy there on purpose, a JSON round trip through CDP is the constraint.
+* Field 15 is written twice: once at boot with `[0,0,0]`, then with four 32-bit words. The last
+  two are what the keystream mixer consumes (`[0,0,Y[1],Y[2]]` in section 11) - so the
+  "Y[1] = Y[2] = 0" observation in section 13 was one run's luck, not a property.
+
+Reproduce:
+
+```
+python3 research/dump_program.py --fields --port 10240 --out /tmp/bg-fields
+```
+
+Next: turn the write log into the token layout - write order plus sizes against the 1100-byte
+token, then check the three per-sign fields against the bytes that move between two mints of the
+same payload.
