@@ -403,10 +403,16 @@ the trace is a 6-instruction loop repeated 27 times:
 op 4 (52 bits)  op 4 (68)  op 4 (136)  op 4 (52)  op 10 (52)  op 12 (84)
 ```
 
-An attempt to arm all six entry points from a single pause produced zero hits - the
-breakpoints have to be armed from a stack where each of them actually appears, which is
-rare for a single sample. Next: collect several sampled stacks, arm each entry point as it
-shows up, then merge the traces.
+Arming works progressively: every pause carries its callers, so each hit lets you arm one
+more name (`T6`, `tY`, `a3` were picked up that way). But arming by name is the wrong
+filter: `a3` and `tY` turned out to be utility functions called in tight loops with
+**constant** arguments (`b=34`, `b=65` for all 1500 hits each), and they consumed the whole
+3000-hit budget. `cH` remains the only entry point observed so far whose arguments
+*change* (`b=230`, `F` walking the bit stream).
+
+So the selection rule is: arm a candidate only if its arguments vary across hits. Next
+attempt should arm `cH` first, then test the others against that rule instead of by
+frequency on the stack.
 
 Next: decode the operands of a few opcodes and check them against the trace (e.g. op 12's
 10-byte operand should be a constant or a field reference), then map opcodes to the
