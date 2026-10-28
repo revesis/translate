@@ -445,6 +445,17 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
                       + vmsel + ".__hn[" + op + "]=String(" + dst + ").slice(0,400))")
             src = src[:m.end()] + inject + src[m.end():]
             info_handlers = {"handler_expr": m.group(0), "op": op, "handler": dst}
+            # the loop hands the handler's *return value* on to the next stage, so that is the
+            # value channel (section 33). Wrap the call once per op id, keeping a single call:
+            m_call = re.search(re.escape(dst) + r"\(\w+,\w+\)", src[m.end():m.end() + 400])
+            if m_call:
+                call = m_call.group(0)
+                start = m.end() + m_call.start()
+                wrapped = ("(function(r){var w=(" + vmsel + ".__hr=" + vmsel + ".__hr||{});"
+                           "if(w[" + op + "]===void 0){var s;try{s=String(r).slice(0,160)}catch(q){s=null}"
+                           "w[" + op + "]=[typeof r,s]}" + "return r})(" + call + ")")
+                src = src[:start] + wrapped + src[start + len(call):]
+                info_handlers["value_expr"] = call
         else:
             info_handlers = {"handler_expr": None}
     else:

@@ -51,6 +51,7 @@ JS = r"""(async () => {
   if (!vm) return JSON.stringify({stage: 'no vm', tok: tok.length});
   return JSON.stringify({tok: tok.length, ip: vm.__ip || [], rd: vm.__rd || [], rv: vm.__rv || [],
                          wr: vm.__wr || [], hn: vm.__hn || {}, fr: vm.__fr || [],
+                         hr: vm.__hr || {},
                          V: vm.V || vm.U || vm.j || null});
 })()"""
 

@@ -1739,3 +1739,37 @@ which requires one more injection at the same site and answers "what does op 430
 
 Standing summary of what is measured per instruction: handler source, program values read, fields
 read, fields written, stack depth. Missing: the value the handler returned.
+
+## 34. Handlers are void, and the byte emitters are two functions away
+
+Following section 33's lead, the loop call is now wrapped so the value handed on is recorded per op
+id (`vm.__hr[op] = [typeof r, String(r).slice(0,160)]`, one call kept). One run, 34 distinct op
+values captured:
+
+```
+op 10, 26, 30, 48, 53, 63, 69, 72, 80, 95, 98, 106, 114, 118, 123, 154, 156, 160, 200, 206 ...
+  typeof = undefined      value = undefined        (all of them)
+```
+
+So handlers are **void**: they communicate by mutating the VM instance, not by returning. Section
+33's "the return value is the channel" is wrong as well and is withdrawn. What that leaves is the
+instance itself - and the two functions that actually append to a field's byte buffer are easy to
+find, because they are the only ones that XOR the per-field keystream on the way in:
+
+```js
+ax = function(b,F,t,J,...){ if(t.C==t) for(e=w(t,b), b==277||b==474||b==473 ? (Y=function(c,...){
+                                        ... e.push(e.Tu[u&7]^c) ... }) : ... }
+     // ax(FIELD_ID, data, vm, ...)   -> e = field buffer, bytes XORed with e.Tu
+qj = function(b,F,t,...){ while(b.C==b){ for(G=z(t,b), t==277||t==474||t==473 ? (L=function(c){...G.push(G.Tu[M&7]^c)...}) : L=function(c){G.push(c)}, ...
+     // qj(vm, data, FIELD_ID, ...)   -> same, argument order rotated again
+```
+
+`e.Tu` / `G.Tu` is the keystream table that `WH` regenerates (`G.Tu=WH(16, block, seed, [0,0,..], 551)`
+in the body of those emitters), i.e. the same table section 13 captured and section 17 proved
+unusable out of band. Here it is used the other way round - to *encrypt* the field bytes on the way
+out - which is why the token's payload is the field table XORed with a per-sign keystream.
+
+That is the remaining measurement for the serializer: hook `ax`/`qj` (both shapes are already
+recognisable, the same way the field writer was) and log `(fieldId, data length, first bytes)`. It
+turns "the program wrote field 146" into "field 146 received these bytes in this order", which is
+one step short of the token itself.
