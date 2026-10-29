@@ -2281,3 +2281,53 @@ Check it with one grep per family:
 grep -o 'Math.random()\*255' interp.js          # -> the filler function
 grep -o '\.concat(\w+(\w+)),[^;]\{0,12\}23)' interp.js   # -> the tag-23 site uses it
 ```
+
+## 42. Which field each record copies, and why only four tags show up
+
+Section 41 gave the tag table from the call sites. This section resolves, per run, which field each
+record's payload is copied from and what wrote that field. Tool: `research/record_map.py` (joins the
+call sites in the interpreter text with the write log and the instruction windows of `disasm.py`).
+
+```
+python3 research/record_map.py /tmp/bg-k-10502/one.json      # Fhxs
+ tag  target  source  writes  bytes  payload expression
+    6    146   None       0      0  []
+   18    146    311       1      0  (YI = z(311,this))
+   23    146   None       0      0  Q9(2,n).concat(AY(n))
+   99    146    473       1      4  Q9(2,T.length).concat(T)
+  117    146   None       0      0  Q9(1,this.K+1>>1)
+  132    146   None       0      0  Q9(2,g.length).concat(g)
+  231    146   None       0      0  []
+```
+
+and the same shape on the other families, with their own ids:
+
+| tag | Fhxs (146) | EON (299) | pBm (366) | payload |
+| --- | --- | --- | --- | --- |
+| 18 | field 311 | field 163 | field 2 | `len16 + field` |
+| 99 | field 473 | field 456 | field 375 | `len16 + field` |
+| 117 | — | — | — | `len1 + (counter+1>>1)` |
+| 132 | — | — | — | `len16 + field`, sliced at 1E6 |
+| 23 | — | — | — | `len16 + RNG(n)` |
+
+**The 99 record is a verbatim copy of the field it names.** One Fhxs run: field 473 was written
+`[93,166,152,25]` and the tag-99 payload is `00 09 5d a6 98 19 39 b0 07 f4 94` - the same four bytes
+(`5d a6 98 19`) right after the length prefix. That is the section-37 "field values appear verbatim"
+observation, now with the record that carries it.
+
+**Why a run shows only four flags (117, 98, 99, 23) and not all eight tags:** the call sites are
+guarded by their source field's length - `YI.length>0&&qj(...,146,18)`, `T.length>4&&ax(...,99)`,
+`g.length>4&&(n>0&&qj(...,146,23))` - and in these runs fields 311 / 2 / 163 are empty (their write
+log entry is a 0-byte write), so 18 and 132 are never emitted, while 6 and 231 sit on a branch that
+did not run. The tag table is the format; which tags appear is data-dependent.
+
+**These source fields are seeded before the program reads anything.** Every write the map finds for
+them has `readsCompleted == 0`, i.e. it lands before the first program read (the page's setup values:
+`117 = 2048`, `23 = 253`, `99 = 6`, `473 = [93,166,152,25]`, and `146 = [184,0,0]` in the same run).
+So the informational records of a normal token are *inputs plus the head template*, not something the
+program collected - which is the opposite of what "botguard collects environment data" suggests, and
+it matters for a reimplementation: those values come from the caller, not from a VM computation.
+
+What is still open on this line: the two computed records (`117` = counter `this.K`, `132` = a field
+sliced at 1E6) and the exact provenance of the seeded fields (which caller-side step writes 473's four
+bytes). Both are narrow; neither needs the VM's program.
