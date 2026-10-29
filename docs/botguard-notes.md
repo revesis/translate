@@ -2401,3 +2401,8 @@ accessor returns `create()` or `prototype` depending on the slot state, so both 
 Trap worth recording: pinning `performance.now()` to 0 (together with the date pins) does not merely
 leave the bytes random - the whole mint degrades to a 33-character token, i.e. an error answer. The
 timing source cannot be neutralised that way, so it is not a usable discriminator.
+
+---
+
+One-page distillation of sections 1 and 36-44 (shape, op table, tag table, what is random, what is
+still open): `docs/token-format.md`. Read that first; this file is the evidence.
