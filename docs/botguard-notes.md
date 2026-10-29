@@ -2331,3 +2331,46 @@ it matters for a reimplementation: those values come from the caller, not from a
 What is still open on this line: the two computed records (`117` = counter `this.K`, `132` = a field
 sliced at 1E6) and the exact provenance of the seeded fields (which caller-side step writes 473's four
 bytes). Both are narrow; neither needs the VM's program.
+
+## 43. Pinning the RNG shows exactly which bytes are random: the nonce, the bulk, and field 473's seed
+
+Section 42 left "where do the seeded bytes come from" open, and section 41 argued the bulk is filler
+from entropy alone. Both are settled by one substitution: replace `Math.random()*255|0` (one site per
+build, inside the filler function) with the constant `170` in the interpreter text, mint once, and
+compare. Tool: `research/probe_rng.py`.
+
+One run (U5tYCxBAtKrhIfdN, emit-only, token field 134, 621 bytes):
+
+```
+token head          aa b4 b8 b4 ee d0 00 06 0b 77 65 eb 2b 77
+                    ^^ nonce[0] pinned          ^ marker intact
+nonce[0] ^ nonce[1] 0x1e                        (the C[1]=C[0]^30 invariant still holds)
+tag 23  payload     02 01 | aa aa aa aa aa aa aa aa ...     len16 = 513, all filler
+tag 99  payload     00 09 | aa aa aa aa | 11 f0 21 76 c5     first 4 pinned, last 5 not
+```
+
+Reading:
+
+* **the 2-byte nonce is the RNG's output** - `token[0]` became `aa` and `token[1]` became `aa^0x1e`,
+  so `AY(2)` in section 1 is exactly this filler function;
+* **the bulk is the RNG's output** - every byte of the 513-byte body is `aa`, which closes the
+  question instead of inferring it from entropy (section 41);
+* **the tag-99 record's first 4 bytes are the RNG's output too** - it starts with four `aa` (that
+  field is 473 in the Fhxs run of section 42, a different id here), so the value that appears verbatim
+  in the token is `RNG(4)`, not something the page passed in. The "caller input" reading of section 42
+  is therefore right for the *counter* fields (117 = 2048, 23 = 253, 99 = 6) but wrong for this one,
+  which is generated;
+* **the last 5 bytes of the tag-99 record are not RNG** (`11 f0 21 76 c5` stayed random-looking), so
+  that record is 4 random bytes + 5 bytes from somewhere else - the one remaining unknown in an
+  otherwise accounted-for token.
+
+So a normal token is: head template (program instructions) + four records, of which the bulk and the
+first four bytes of the 99 record are randomness and the rest are small caller-set numbers plus five
+unexplained bytes. For a reimplementation that means the only content that must be *computed* is those
+five bytes and the counter records; everything else is a template or an RNG draw.
+
+Reproduce:
+
+```
+python3 research/probe_rng.py --port 10530 --out /tmp/bg-rng
+```
