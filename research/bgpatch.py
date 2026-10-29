@@ -115,6 +115,146 @@ def find_name(s: str, upto: int, vm: str):
     return best[0], best[1], best[2], brace_end(s, best[2])
 
 
+def patch_emit(src, info_emit):
+    """Hook the byte emitters; usable on its own (a load whose reader anchors do not match)."""
+    # The byte emitters are the only functions that XOR the per-field keystream while appending
+    # (`e.push(e.Tu[i&7]^byte)`), and they come in two argument orders:
+    #   ax(fieldId, data, vm)   body: if(vm.C==vm) ... w(vm, fieldId)
+    #   qj(vm, data, fieldId)   body: while(vm.C==vm) ... z(fieldId, vm)
+    # Logging (fieldId, data length, first byte) per call shows the token being assembled.
+    info_emit.setdefault("sites", [])
+
+    def log_call(vm_arg, fid_arg, data_arg, flag_arg):
+        """One log statement; every field is derived from names, never from a build's ids."""
+        # the boot hunk is what normally exposes the instance as `window.__vmref`; emit-only runs
+        # have no boot hunk, so the first emit publishes it too (idempotent, one comparison)
+        return ("(window.__vmref=window.__vmref||" + vm_arg + "),("
+                + "(" + vm_arg + ".__em=" + vm_arg + ".__em||[]).push([" + fid_arg + ",("
+                + data_arg + "&&" + data_arg + ".length)|0,(" + data_arg
+                + "&&" + data_arg + "[0])|0,(" + vm_arg + ".__rv||[]).length,"
+                "(" + data_arg + "&&" + data_arg + ".length<=16?Array.prototype.slice.call("
+                + data_arg + ",0,16):null),(" + data_arg + "&&" + data_arg
+                + ".length<=4096?btoa(String.fromCharCode.apply(null,Array.prototype.slice.call("
+                + data_arg + ",0,4096))):null),("
+                + ((flag_arg + "&255") if flag_arg else "0") + ")|0]));")
+
+    # ---- shape B: the state-machine emitters (EON, pBm, SnVl) -------------------------
+    #   y4=function(fid, data, vm, flag, ...){if(vm.W==vm){{buf=acc(vm,fid), ...},
+    #        flag&&push(<obfuscated flag&255>), i=0,n=data.length;while(i<n)push(data[i])}}
+    # No `.C==` guard, and the flag expression is obfuscated differently per build
+    # (`255-~(J&255)+-256`, `-1-~q-(q^255)+(~q&255)`, ...), so nothing about it is matched
+    # literally. The anchor is the byte loop itself, and the flag push is the `X&&P(...)` call
+    # to the same push closure just before it. Every role comes from the expression that uses it:
+    #   enclosing fn  nearest `=function(...)` whose params contain the flag var (the push
+    #                 closure defined just before the flag push breaks a plain "last function
+    #                 before the match" walk)
+    #   vm            from the guard `if(vm.X==vm)`
+    #   fid           from the accessor call `acc(vm, fid)` / `acc(fid, vm)`
+    # Brace matching is not used: the interpreter text carries braces inside string literals
+    # (`'(function(){/*'`), so a counter over raw characters picks the wrong span.
+    def balanced(source, i):
+        """Argument text of the call whose `(` is at i, or None."""
+        depth = 0
+        for j in range(i, min(len(source), i + 400)):
+            if source[j] == "(":
+                depth += 1
+            elif source[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    return source[i + 1:j]
+        return None
+
+    # shape A is the same function seen from the guard side; a function must be hooked once, or
+    # every call is logged twice and the byte accounting breaks
+    cands_a = list(re.finditer(r"(\w+)=function\(([^)]*)\)\{(?:if|while)\(\w+\.C==\w+\)", src))
+    a_heads = {m.start() for m in cands_a}
+
+    shape_b, seen_b = [], set()
+    for mloop in re.finditer(r"(\w+)\((\w+)\[\w+\]\)", src):
+        pushvar, data_arg = mloop.group(1), mloop.group(2)
+        back_start = max(0, mloop.start() - 500)
+        back = src[back_start:mloop.start()]
+        flag_arg = None
+        for c in reversed(list(re.finditer(r"(\w+)&&(\w+)\(", back))):
+            if c.group(2) != pushvar:
+                continue
+            args = balanced(src, back_start + c.end() - 1)
+            if args and re.search(r"\b" + re.escape(c.group(1)) + r"\b", args):
+                flag_arg = c.group(1)
+                break
+        if not flag_arg:
+            continue
+        head = None
+        for cand in reversed(list(re.finditer(r"(\w+)=function\(([^)]*)\)\{",
+                                              src[:mloop.start()]))):
+            ps = [x.strip() for x in cand.group(2).split(",") if x.strip()]
+            if flag_arg in ps and mloop.start() - cand.start() < 4000:
+                head = cand
+                break
+        if not head or head.start() in seen_b or head.start() in a_heads:
+            continue
+        window = src[head.end():mloop.start()]
+        # the guard rotates too: `if(vm.C==vm)`, `switch(!(vm.R==vm))`, `for(;;vm.o==vm;...)`,
+        # so it is matched as the identity comparison itself, not as a statement form
+        mvm = re.search(r"(\w+)\.\w+==\1", window)
+        macc = re.search(r"(\w+)\((\w+),(\w+)\)", window)
+        if not (mvm and macc):
+            continue
+        vm_arg = mvm.group(1)
+        a1, a2 = macc.group(2), macc.group(3)
+        fid_arg = a2 if a1 == vm_arg else (a1 if a2 == vm_arg else None)
+        if not fid_arg:
+            continue
+        seen_b.add(head.start())
+        shape_b.append((head.end(), head.group(1), vm_arg, fid_arg, data_arg, flag_arg))
+    for at, fn, vm_arg, fid_arg, data_arg, flag_arg in reversed(shape_b):
+        src = src[:at] + log_call(vm_arg, fid_arg, data_arg, flag_arg) + src[at:]
+        info_emit["sites"].append({"fn": fn, "shape": "state", "vm": vm_arg,
+                                   "field": fid_arg, "data": data_arg, "flag": flag_arg})
+
+    # ---- shape A: the Fhxs emitters (guard first, obfuscated flag push) ----------------
+    # reverse order: each injection shifts the text, and these offsets are from the pre-patch string
+    for m in reversed(cands_a):
+        ps = [x.strip() for x in m.group(2).split(",")]
+        if len(ps) < 3:
+            continue
+        mvm = re.search(r"(?:if|while)\((\w+)\.C==", m.group(0))
+        vm_arg = mvm.group(1) if mvm else ps[0]
+        body = src[m.end():m.end() + 140]
+        macc = re.search(r"(?:w|z)\((\w+),(\w+)\)", body)
+        if macc:
+            a1, a2 = macc.group(1), macc.group(2)
+            fid_arg = a2 if a1 == vm_arg else a1
+        else:
+            fid_arg = next((x for x in ps[:3] if x != vm_arg), ps[0])
+        data_arg = next((x for x in ps[:4] if x not in (vm_arg, fid_arg)), ps[1])
+        # Every emitter call may push one extra byte *before* the payload:
+        #   `J&&L(255-~(J&255)+-256)` then `for(...)L(data[i])`
+        # (the expression is `J&255` written obfuscated). That byte is the "stray" between
+        # chunks of section 38, so the flag is logged and the accounting closes.
+        flag_arg = None
+        mflag = re.search(r"(\w+)&&\w+\(255-~\(\1&255\)\+-256\)", src[m.end():m.end() + 800])
+        if mflag:
+            flag_arg = mflag.group(1)
+        inject = log_call(vm_arg, fid_arg, data_arg, flag_arg)
+        if src[m.end():m.end() + 1] == "{":
+            # inside the loop/if body: `while(vm.C==vm){(log); ...original }`
+            at = m.end() + 1
+            src = src[:at] + inject + src[at:]
+        else:
+            # no braces (`if(vm.C==vm)for(...)`): fold the log into the condition instead of
+            # inserting before the body, which would change what the loop iterates over
+            mcond = re.search(r"\(\w+\.C==\w+\)$", m.group(0))
+            cond = mcond.group(0)[1:-1]
+            at = m.start() + m.group(0).rindex(cond)
+            src = (src[:at] + "(" + inject.rstrip(";") + "," + cond + ")"
+                   + src[at + len(cond):])
+        info_emit["sites"].append({"fn": m.group(1), "shape": "guard", "params": ps[:4],
+                                   "vm": vm_arg, "field": fid_arg, "data": data_arg,
+                                   "flag": flag_arg})
+    return src
+
+
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
           writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
           loop=False, handlers=False, fieldread=False, emit=False):
@@ -122,6 +262,15 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
     S = sink or "window"
+    # Emit-only is a self-contained hunk: it needs no reader, boot or dispatch anchors, so a build
+    # family whose anchors nobody has taught yet can still be measured (run_one falls back here).
+    if emit and not any((entry, ret, boot, sweep, blockcache, writes, killswitch, canary, post,
+                         kinds, loop, handlers, fieldread)):
+        info = {"sites": []}
+        src = patch_emit(src, info)
+        if "window.__MINE=1;" not in src:
+            src = src + "window.__MINE=1;"
+        return src, info
     r = find_reader(src)
     name, params, bstart, bend = find_name(src, r["start"], r["vm"])
     body = src[bstart:bend]
@@ -490,63 +639,9 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         info_fr = {}
 
     if emit:
-        # The byte emitters are the only functions that XOR the per-field keystream while appending
-        # (`e.push(e.Tu[i&7]^byte)`), and they come in two argument orders:
-        #   ax(fieldId, data, vm)   body: if(vm.C==vm) ... w(vm, fieldId)
-        #   qj(vm, data, fieldId)   body: while(vm.C==vm) ... z(fieldId, vm)
-        # Logging (fieldId, data length, first byte) per call shows the token being assembled.
         info_emit = {"sites": []}
-        cands = list(re.finditer(r"(\w+)=function\(([^)]*)\)\{(?:if|while)\(\w+\.C==\w+\)", src))
-        # reverse order: each injection shifts the text, and these offsets are from the pre-patch string
-        for m in reversed(cands):
-            ps = [x.strip() for x in m.group(2).split(",")]
-            if len(ps) < 3:
-                continue
-            mvm = re.search(r"(?:if|while)\((\w+)\.C==", m.group(0))
-            vm_arg = mvm.group(1) if mvm else ps[0]
-            body = src[m.end():m.end() + 140]
-            macc = re.search(r"(?:w|z)\((\w+),(\w+)\)", body)
-            if macc:
-                a1, a2 = macc.group(1), macc.group(2)
-                fid_arg = a2 if a1 == vm_arg else a1
-            else:
-                fid_arg = next((x for x in ps[:3] if x != vm_arg), ps[0])
-            data_arg = next((x for x in ps[:4] if x not in (vm_arg, fid_arg)), ps[1])
-            # Every emitter call may push one extra byte *before* the payload:
-            #   `J&&L(255-~(J&255)+-256)` then `for(...)L(data[i])`
-            # (the expression is `J&255` written obfuscated). That byte is the "stray" between
-            # chunks of section 38, so the flag is logged and the accounting closes.
-            flag_arg, flag_expr = None, None
-            mflag = re.search(r"(\w+)&&\w+\(255-~\(\1&255\)\+-256\)", src[m.end():m.end() + 800])
-            if mflag:
-                flag_arg = mflag.group(1)
-                flag_expr = mflag.group(0)
-            # the whole payload is logged (base64) up to FULL_CAP: the bulk chunk is where the
-            # collected data lives, and knowing only its length was the blocker for section 39
-            inject = ("(" + vm_arg + ".__em=" + vm_arg + ".__em||[]).push([" + fid_arg + ",("
-                      + data_arg + "&&" + data_arg + ".length)|0,(" + data_arg
-                      + "&&" + data_arg + "[0])|0,(" + vm_arg + ".__rv||[]).length,"
-                      "(" + data_arg + "&&" + data_arg + ".length<=16?Array.prototype.slice.call("
-                      + data_arg + ",0,16):null),(" + data_arg + "&&" + data_arg
-                      + ".length<=4096?btoa(String.fromCharCode.apply(null,Array.prototype.slice.call("
-                      + data_arg + ",0,4096))):null),("
-                      + ((flag_arg + "&255") if flag_arg else "0") + ")|0]);")
-            if src[m.end():m.end() + 1] == "{":
-                # inside the loop/if body: `while(vm.C==vm){(log); ...original }`
-                at = m.end() + 1
-                src = src[:at] + inject + src[at:]
-            else:
-                # no braces (`if(vm.C==vm)for(...)`): fold the log into the condition instead of
-                # inserting before the body, which would change what the loop iterates over
-                mcond = re.search(r"\(\w+\.C==\w+\)$", m.group(0))
-                cond = mcond.group(0)[1:-1]
-                at = m.start() + m.group(0).rindex(cond)
-                src = (src[:at] + "(" + inject.rstrip(";") + "," + cond + ")"
-                       + src[at + len(cond):])
-            info_emit["sites"].append({"fn": m.group(1), "params": ps[:4], "vm": vm_arg,
-                                       "field": fid_arg, "data": data_arg})
-    else:
-        info_emit = {}
+        src = patch_emit(src, info_emit)
+
 
     # marker: proves the copy the page is running is *this* text. Some loads end up executing
     # a pristine copy (the page's own bootguard wins the race), and without the marker that is

@@ -2131,3 +2131,74 @@ of inferred.
 * The flag byte and the payload are logged at *function entry*, so a call with `J` truthy but
   `J&255 == 0` is indistinguishable from a call with no flag. No such call was observed, but the
   accounting would silently stay correct-by-length and wrong-by-position if one appeared.
+
+## 40. The emitter hook now covers every build family, and the accounting closes on all of them
+
+Section 39 could only measure Fhxs loads (the hook keyed off `while(vm.C==vm)` / `if(t.C==t)` and the
+literal flag expression). That limit is gone: five families have been measured, each with **two**
+emitter sites, and every run below closes byte for byte.
+
+| build | emitter sites | token field | mode | run |
+| --- | --- | --- | --- | --- |
+| FhxsKBPKEL3Q_ | ax, qj | 146 | full | exact 724/724 |
+| EONwmJdvD0_ | UC, W | 299 | full | exact 759/759 |
+| pBmIPB2A48c | y4, Gm | 366 | full | exact 766/766 |
+| X9X8Htl1zlji | (2 sites) | 478 | full | exact 883/883 |
+| SnVlM0KMiNaW | qh, Ez | 483 | emit-only | exact 956/956 |
+
+**The token's field id is not 146.** It rotates with the build like every other id (146 / 299 / 366 /
+478 / 483 above), so nothing may hard-code it. `research/align_emits.py` now identifies the field by
+content: it tries each field that emitted something and keeps the one whose `flag + payload` stream
+equals the token body. Sections 37-39 say "field 146" throughout; read that as "the token field".
+
+### How the state-machine emitters are found
+
+The shape (EON/pBm/SnVl/X9X8) has no `.C==` guard and the flag expression is obfuscated differently
+per build, so nothing is matched literally:
+
+```
+qh=function(N,y,e,D,...){for(true;y.o==y;Number()){{q=p(y,N),
+     N==401||N==291||N==307 ? (M=<keystream closure>, u=K(448,y)) : M=function(P){q.push(P)},
+     D&&M(-1-~D-(D^255)+(~D&255)),          // the flag byte, obfuscated as D&255
+     A=0,n=e.length;while(A<n)M(e[A]),A++}}
+```
+
+* **anchor:** the byte loop itself, `PUSH(DATA[i])`. Everything else is derived from what uses it:
+  the flag is the `FLAG&&PUSH(<expr mentioning FLAG>)` call to the same closure just before the loop
+  (argument parsed with paren balance, because `-1-~D-(D^255)+(~D&255)` contains parens), the vm is
+  the identity comparison in the guard, the field id is the accessor argument that is not the vm, and
+  the data is the array indexed by the loop.
+* **the guard rotates:** `if(vm.C==vm)`, `switch(!(vm.R==vm))`, `for(true;vm.o==vm;Number())`. Match
+  the identity comparison `(\w+)\.\w+==\1`, not the statement around it.
+* **the flag expression rotates:** `J&&L(255-~(J&255)+-256)` (Fhxs), `Z&&Q(Z&255)` (pBm),
+  `q&&P(-1-~q-(q^255)+(~q&255))` (SnVl). All three are `FLAG&255` written three different ways.
+* a function must be hooked **once**: the Fhxs emitters match both detectors (guard side and loop
+  side), and a double hook logs every call twice, which breaks the accounting while still looking
+  plausible. Shape A (guard) is resolved first and shape B skips those function starts.
+
+### Emit-only mode, and the two anchors that fail on new families
+
+Two of today's loads (`SnVlM0KMiNaW`, `U5tYCxBAtKrhIfdN`) do not match the reader anchors at all -
+`cannot tell bits from flag: ['N','y','e','D']` and `boot anchor not found`. The emit hunk needs none
+of them, so `bgpatch.patch(src, entry=False, ret=False, boot=False, emit=True)` now runs it on its own
+and `run_one.py` falls back to that when the full patch raises. Two consequences:
+
+* the boot hunk is what normally publishes `window.__vmref` (the handle `run_one` uses to read the
+  logs), so in emit-only mode the first emit publishes it: `(window.__vmref=window.__vmref||vm),…`.
+* read counts (`vm.__rv`) are empty in that mode, so emissions cannot be joined to instructions - the
+  byte accounting still works, the instruction attribution does not.
+
+### Correction: the "0xeb" stray was an alignment artefact
+
+Section 39 recorded the bulk record's flag as 0x17 in one run and 0xeb in another, and the previous
+commit inferred a per-build rotation from it. That 0xeb was **not** a logged flag: it came from the
+alignment walk, which had no flag byte to place and therefore shifted the 745-byte chunk one byte
+early, leaving the chunk's last byte (`eb`) looking like a trailing stray. With the flag logged, every
+run measured since shows the same four values:
+
+```
+flags = 0x75, 0x62, 0x63, 0x17      (14 of 14 logged runs, all five families)
+```
+
+So the tags are stable across builds in this window (14 runs), and the rotating id is the *token field*, not the
+flag. Whether the tags rotate over time is untested - record the value per run, do not assume it.

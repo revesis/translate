@@ -19,11 +19,11 @@ def token_bytes(tok: str) -> bytes:
     return base64.urlsafe_b64decode(body)
 
 
-def emission_stream(em) -> bytes:
-    """flag byte (when set) + payload, per call, in call order, for field 146 only."""
+def emission_stream(em, field: int = 146) -> bytes:
+    """flag byte (when set) + payload, per call, in call order, for one field."""
     out = bytearray()
     for e in em:
-        if int(e[0]) != 146:
+        if int(e[0]) != field:
             continue
         flag = int(e[6]) if len(e) > 6 and e[6] is not None else 0
         if flag:
@@ -40,21 +40,31 @@ def align(path: str, verbose: bool = True) -> dict:
     tok = d.get("tokstr") or ""
     em = [e for e in (d.get("em") or []) if isinstance(e, list) and len(e) >= 3]
     raw = token_bytes(tok)
-    stream = emission_stream(em)
-    f146 = raw[2:]                       # token = nonce(2) + field146
+    # the token's field id rotates with the build (146 on Fhxs, 366 on pBm, 478 on X9X8), so the
+    # field is identified by its content: the one whose emission stream equals the token body
+    f146 = raw[2:]                       # token = nonce(2) + <token field>
     head = f146[:3]                      # b8 <nonce[1]> <byte>; the emitted stream starts at 3
     body = f146[3:]
+    fields = sorted({int(e[0]) for e in em})
+    stream, token_field = emission_stream(em, 146), 146
+    for f in fields:
+        cand = emission_stream(em, f)
+        if cand and cand == body:
+            stream, token_field = cand, f
+            break
     ok = body == stream
     first_diff = next((i for i, (a, b) in enumerate(zip(body, stream)) if a != b), None)
     out = {"path": path, "build": d.get("build"), "token_chars": len(tok), "token_bytes": len(raw),
-           "emits": len(em), "emits146": sum(1 for e in em if int(e[0]) == 146),
+           "emits": len(em), "token_field": token_field,
+           "emits146": sum(1 for e in em if int(e[0]) == token_field),
            "stream": len(stream), "body": len(body), "exact": ok,
            "first_diff": first_diff, "head": head,
            "flag_bytes": [(i, int(e[6])) for i, e in enumerate(em)
                           if len(e) > 6 and e[6]]}
     if verbose:
         print(f"{path}  build {out['build']}  token {len(tok)} chars / {len(raw)} bytes")
-        print(f"  emits {out['emits']} (field 146: {out['emits146']})  stream {len(stream)} B  "
+        print(f"  emits {out['emits']} (token field {out['token_field']}: "
+              f"{out['emits146']})  stream {len(stream)} B  "
               f"body {len(body)} B  exact={ok}" + (f"  first diff at {first_diff}" if not ok else ""))
         print(f"  head {head.hex(' ')}  flag bytes {[(i, hex(v)) for i, v in out['flag_bytes']]}")
         if not ok:

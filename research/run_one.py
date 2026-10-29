@@ -76,10 +76,20 @@ async def run(port: int, out: str) -> None:
         tag = str(arr[2])[:16]
         os.makedirs(out, exist_ok=True)
         open(os.path.join(out, "interp_" + tag + ".js"), "w").write(plain)
-        src, info = bgpatch.patch(plain, blockcache=False, writes=True, loop=True, handlers=True,
-                                  fieldread=True, emit=True)
+        # Builds rotate and each family moves the reader/writer anchors, so a full patch can fail
+        # on a family nobody has taught `bgpatch` yet. The emit measurement does not need any of
+        # those hunks: fall back to the emitter hook alone rather than losing the load.
+        mode = "full"
+        try:
+            src, info = bgpatch.patch(plain, blockcache=False, writes=True, loop=True,
+                                      handlers=True, fieldread=True, emit=True)
+        except SystemExit as e:
+            print("full patch failed (%s); retrying with emit only" % e)
+            src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, emit=True)
+            mode = "emit-only"
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
-        print("build", tag, {k: v for k, v in info.items() if k not in ("params", "wrappers")})
+        print("build", tag, "mode", mode,
+              {k: v for k, v in info.items() if k not in ("params", "wrappers")})
         d = json.loads(await cs.eval(JS % (json.dumps(arr), json.dumps(src), json.dumps(freq))))
         print({k: (len(v) if isinstance(v, (list, dict)) else v) for k, v in d.items()})
         d["build"] = tag
