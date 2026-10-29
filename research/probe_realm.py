@@ -85,6 +85,35 @@ MINT = r"""(async () => {
 
 
 class RS(ChromeSession):
+    stderr_path = None
+
+    async def start(self) -> None:
+        """Same launch as the parent, but stderr goes to a file so engine-level logs survive."""
+        import shutil
+        import subprocess
+        import time
+        import urllib.request
+
+        self._loop = asyncio.get_running_loop()
+        shutil.rmtree(self.profile_dir, ignore_errors=True)
+        os.makedirs(self.profile_dir, exist_ok=True)
+        args = [self.binary, "--headless=new", "--no-sandbox", "--disable-gpu",
+                "--disable-dev-shm-usage", "--disable-crash-reporter", "--disable-breakpad",
+                f"--remote-debugging-port={self.port}", f"--user-data-dir={self.profile_dir}",
+                f"--user-agent={self.ua}", "--window-size=1920,1040", "--enable-logging=stderr",
+                "--v=0", "about:blank"]
+        err = open(self.stderr_path, "w") if self.stderr_path else subprocess.DEVNULL
+        self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=err)
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/version", timeout=2) as r:
+                    if r.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                await asyncio.sleep(0.3)
+        await self._connect()
+
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self.hooked = set()
@@ -121,12 +150,14 @@ class RS(ChromeSession):
             pass
 
 
-async def run(material_path: str, out: str, port: int, chrome: str = "/usr/bin/google-chrome-stable") -> None:
+async def run(material_path: str, out: str, port: int, chrome: str = "/usr/bin/google-chrome-stable",
+              stderr_path: str | None = None) -> None:
     m = json.load(open(material_path))
     arr = m["arr"]
     interp = arr[5][-1]
     freq = open(os.path.join(HERE, "freq.txt")).read()
     cs = RS(chrome, port, DEFAULT_UA, "/tmp/bg-realm-%d" % port)
+    cs.stderr_path = stderr_path
     await cs.start()
     try:
         await cs.send("Runtime.enable")
@@ -183,8 +214,9 @@ def main() -> None:
     ap.add_argument("--out", default="/tmp/bg-realm")
     ap.add_argument("--port", type=int, default=10301)
     ap.add_argument("--chrome", default="/usr/bin/google-chrome-stable")
+    ap.add_argument("--stderr", default=None, help="capture chrome stderr here (patched-build logs)")
     a = ap.parse_args()
-    asyncio.run(run(a.material, a.out, a.port, a.chrome))
+    asyncio.run(run(a.material, a.out, a.port, a.chrome, a.stderr))
 
 
 if __name__ == "__main__":
