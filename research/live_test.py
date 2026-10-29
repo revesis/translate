@@ -109,7 +109,7 @@ def classify(raw: str, status: int) -> tuple:
     return "unknown", f"status {status}, {len(raw)} chars"
 
 
-async def run(port: int, out: str, dry: bool) -> None:
+async def run(port: int, out: str, dry: bool, control: bool = False) -> None:
     os.makedirs(out, exist_ok=True)
     img_path = os.path.join(out, "text.png")
     image = make_image(img_path)
@@ -125,10 +125,24 @@ async def run(port: int, out: str, dry: bool) -> None:
     body = raw_token[1:]
     body += "=" * (-len(body) % 4)
     raw_bytes = b64mod.urlsafe_b64decode(body)
-    token = ";" + b64mod.urlsafe_b64encode(
-        assemble(items, os.urandom(2), raw_bytes[4], fresh_bulk=os.urandom)).decode().rstrip("=")
-    print(f"  assembled token {len(token)} chars (captured {len(raw_token)})  "
-          f"same length={len(token) == len(raw_token)}")
+    if control:
+        # the control: a pristine token from the shipped signer (its own browser, its own page),
+        # sent through the same hand-built envelope as the assembled one
+        from bgr_sidecar import LocalSigner
+        signer = LocalSigner(profile_dir="/tmp/bg-live-signer").start()
+        try:
+            out_sign = signer.sign(cap["freq"])
+        finally:
+            signer.stop()
+        bgr = out_sign["bgr"]
+        token = json.loads(bgr)[0]
+        print(f"  control token {len(token)} chars (build {out_sign.get('build')}), "
+              f"captured-in-load {len(raw_token)}")
+    else:
+        token = ";" + b64mod.urlsafe_b64encode(
+            assemble(items, os.urandom(2), raw_bytes[4], fresh_bulk=os.urandom)).decode().rstrip("=")
+        print(f"  assembled token {len(token)} chars (captured {len(raw_token)})  "
+              f"same length={len(token) == len(raw_token)}")
     json.dump({"token": token, "captured": raw_token, "sid": cap["sid"], "bl": cap["bl"]},
               open(os.path.join(out, "live.json"), "w"))
     if dry:
@@ -149,8 +163,9 @@ async def run(port: int, out: str, dry: bool) -> None:
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Cookie": cap["cookies"],
-        "X-Goog-BatchExecute-Bgr": json.dumps([token, None, None, 214, 4, None, None, 0, "2"],
-                                              separators=(",", ":")),
+        "X-Goog-BatchExecute-Bgr": (bgr if control else
+                                    json.dumps([token, None, None, 214, 4, None, None, 0, "2"],
+                                               separators=(",", ":"))),
         "X-Goog-Ext-387202953-Jspb": '["/DataService.GetImageTranslation"]',
     }
     headers.update(CLIENT_HINTS)
@@ -177,8 +192,11 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10750)
     ap.add_argument("--out", default="/tmp/bg-live")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--control", action="store_true",
+                    help="send a browser-minted (pristine) token in the same envelope instead of the "
+                         "assembled one: the control for section 53")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out, a.dry_run))
+    asyncio.run(run(a.port, a.out, a.dry_run, a.control))
 
 
 if __name__ == "__main__":

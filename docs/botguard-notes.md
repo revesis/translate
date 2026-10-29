@@ -2741,3 +2741,40 @@ Caveats, stated plainly:
   only that the token itself is not what the gate is looking at.
 
 Reproduce: `python3 research/live_test.py --port N --out DIR` (add `--dry-run` to stop before the POST).
+
+## 54. The control overturns section 53: a pristine token in the same envelope gets OCR
+
+Section 53 sent an assembled token and got the echo, and concluded that the gate attests the client
+rather than the token. The control it named - a browser-minted token through the *same* hand-built
+envelope - was run once (one request, no retries):
+
+```
+control token 1429 chars (shipped signer, build wlvZkA...), captured-in-load mint 1163 chars
+HTTP 200  class=accepted
+  payload: ['BACKUP JOB FAILED ON NODE DB-07\n\nERROR CODE 1284 - RETRY ABORTED',
+            '节点 DB-07 上的备份作业失败\n\n错误代码 1284 - 重试已中止', 'en']
+```
+
+So the envelope is fine (it carries OCR with a pristine token), and **section 53's conclusion is
+withdrawn**: the echo was not "the environment, not the token". With the same cookies, `f.sid`, `bl`,
+headers and image, a 1429-character token returns text and an 895-character assembled token returns the
+echo.
+
+What that means:
+
+* the gate is **not about the token's format** - the assembled token verified (no `400`/`er`), so its
+  structure is right;
+* the gate **is** about the token's content: the difference between the two tokens is the per-load
+  constants (the environment snapshot) and the length regime (895 vs 1429 chars, i.e. the
+  instrumented/degraded branch versus the trusted one);
+* the assembled token inherited its constants from a **patched** mint, and instrumentation is exactly
+  what pushes the VM onto the degraded branch (section 24: instrumented runs land at 600-1300 chars
+  instead of 1405-1447). So "assemble from a captured token" and "capture with the emit hook" are
+  mutually exclusive as done so far - the capture destroys the trust it needs to preserve.
+
+The next experiment that would settle it does not need the emit hook at all: **parse the per-load
+constants out of a pristine trusted token** (they are in the head: `5f 44`, the two 4-byte words, the
+64-byte block), assemble a token with a fresh nonce and fresh bulk around them, and send it once. If
+that is accepted, the constants are reusable and an offline minter is feasible with a one-time
+trusted capture; if it is echoed, the token's freshness/nonce is bound to the mint and the offline
+route is closed for good. That is one more request, so it is left for an explicit decision.
