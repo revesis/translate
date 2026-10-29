@@ -109,7 +109,8 @@ def classify(raw: str, status: int) -> tuple:
     return "unknown", f"status {status}, {len(raw)} chars"
 
 
-async def run(port: int, out: str, dry: bool, control: bool = False) -> None:
+async def run(port: int, out: str, dry: bool, control: bool = False,
+              control_fresh: bool = False) -> None:
     os.makedirs(out, exist_ok=True)
     img_path = os.path.join(out, "text.png")
     image = make_image(img_path)
@@ -125,7 +126,41 @@ async def run(port: int, out: str, dry: bool, control: bool = False) -> None:
     body = raw_token[1:]
     body += "=" * (-len(body) % 4)
     raw_bytes = b64mod.urlsafe_b64decode(body)
-    if control:
+    if control_fresh:
+        # parse the trusted token: keep every per-load constant, replace only the nonce and the bulk.
+        # The bulk is the tag-23 record: 0x17, a 2-byte length, then exactly that many bytes to the end.
+        from bgr_sidecar import LocalSigner
+        signer = LocalSigner(profile_dir="/tmp/bg-live-signer").start()
+        try:
+            out_sign = signer.sign(cap["freq"])
+        finally:
+            signer.stop()
+        bgr = out_sign["bgr"]
+        pristine = json.loads(bgr)[0]
+        pb = pristine[1:]
+        pb += "=" * (-len(pb) % 4)
+        raw_p = b64mod.urlsafe_b64decode(pb)
+        pos = None
+        for i in range(len(raw_p) - 3, 5, -1):
+            if raw_p[i] == 0x17:
+                n = (raw_p[i + 1] << 8) | raw_p[i + 2]
+                if i + 3 + n == len(raw_p):
+                    pos = i
+                    break
+        print(f"  pristine {len(pristine)} chars ({len(raw_p)} B)  bulk record at {pos}"
+              + (f" len {(raw_p[pos + 1] << 8) | raw_p[pos + 2]}" if pos else ""))
+        out_b = bytearray(raw_p)
+        r = os.urandom(1)[0]
+        out_b[0] = r
+        out_b[1] = r ^ 0x1E
+        out_b[3] = out_b[1]                      # token[3] mirrors nonce[1]
+        if pos:
+            n = (raw_p[pos + 1] << 8) | raw_p[pos + 2]
+            out_b[pos + 3:pos + 3 + n] = os.urandom(n)
+        token = ";" + b64mod.urlsafe_b64encode(bytes(out_b)).decode().rstrip("=")
+        print(f"  re-randomised token {len(token)} chars (same length="
+              f"{len(token) == len(pristine)})  nonce {out_b[0]:02x} {out_b[1]:02x}")
+    elif control:
         # the control: a pristine token from the shipped signer (its own browser, its own page),
         # sent through the same hand-built envelope as the assembled one
         from bgr_sidecar import LocalSigner
@@ -192,11 +227,14 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10750)
     ap.add_argument("--out", default="/tmp/bg-live")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--control-fresh", action="store_true",
+                    help="pristine token from the signer, then a fresh nonce and a fresh bulk, "
+                         "everything else kept: does the service accept a re-randomised token?")
     ap.add_argument("--control", action="store_true",
                     help="send a browser-minted (pristine) token in the same envelope instead of the "
                          "assembled one: the control for section 53")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out, a.dry_run, a.control))
+    asyncio.run(run(a.port, a.out, a.dry_run, a.control, a.control_fresh))
 
 
 if __name__ == "__main__":

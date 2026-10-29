@@ -2778,3 +2778,37 @@ constants out of a pristine trusted token** (they are in the head: `5f 44`, the 
 that is accepted, the constants are reusable and an offline minter is feasible with a one-time
 trusted capture; if it is echoed, the token's freshness/nonce is bound to the mint and the offline
 route is closed for good. That is one more request, so it is left for an explicit decision.
+
+## 55. Re-randomising a trusted token's nonce is enough to lose the OCR
+
+Section 54 proposed: parse the constants out of a pristine token, put a fresh nonce (and a fresh bulk)
+around them, send once. The bulk could not be located - a trusted token has **no `0x17` tag-23 record**
+(a scan of the last 1200 bytes finds no `[0x17][len16][...]` ending at the token end), so its tail is a
+different format from the instrumented tokens of sections 41-52. What was possible is the nonce half:
+
+```
+pristine 1419 chars (1063 B)      from the shipped signer, trusted range
+re-randomised 1419 chars          only bytes 0,1,3 changed: new r, token[1] = r^0x1e, token[3] = token[1]
+HTTP 200  class=verified/echo     1 element, the returned image is byte-identical to the upload
+```
+
+So a token that the control (section 54) got OCR from, with **two bytes of nonce changed**, is served
+the echo - while its structure still verifies (`200`, no `400`/`er`). The service binds the token to
+its nonce.
+
+**Confound, stated plainly:** byte 4 is derived from the same random stream (section 48) and was left
+at its captured value, so "stale byte 4" is an alternative explanation for the echo. Separating the two
+needs one more request that changes **only byte 4** and leaves the nonce intact: accepted would mean
+byte 4 is inert and the nonce is the bound value; echoed would mean any single-byte edit breaks it,
+i.e. the whole token is authenticated.
+
+What this already rules out, together with section 54:
+
+* an offline minter cannot take a trusted token and re-randomise it - the nonce (or its companion byte)
+  is inside whatever the server authenticates;
+* the assembled token of section 53 was not rejected for being malformed, it was rejected for not
+  carrying a trustworthy environment - which is consistent with the token being a MAC over
+  VM-generated values, not a serialisation the caller can re-derive.
+
+The practical conclusion stands and is now better supported: the Chrome sidecar is the only working
+signer, and the token is not something a reimplementation can mint from the outside.
