@@ -2563,3 +2563,28 @@ Still open on this line: how the per-load words are computed (they are not RNG a
 section 44's exclusions apply to them as well), and whether `5f 44` and the 64-byte block are also
 environment-derived. The discriminating experiment is the same one that produced the table: mint
 twice, change exactly one input between mints (e.g. `freq`), and see which head bytes move.
+
+## 49. The head does not depend on the request content at all
+
+Section 48 named the experiment: mint with the same inputs, then change exactly one (`freq`, the
+content-binding string) and see which head bytes move. Measured, one load, three mints A / B / A:
+
+```
+  mint0 A 1080B  b3 ad b8 ad c9 | ... | 5f bd a3 f2 1f e7 36 6e 96 26 00 40 01 10 0a d9
+  mint1 B 1083B  23 3d b8 3d 59 | ... | 5f bd a3 f2 1f e7 36 6e 96 26 00 40 01 10 0a d9
+  mint2 A 1083B  6e 70 b8 70 14 | ... | 5f bd a3 f2 1f e7 36 6e 96 26 00 40 01 10 0a d9
+```
+
+The two 4-byte words (`bd a3 f2 1f`, `e7 36 6e 96`) are byte-identical for A, B and A, and so is
+everything else after the nonce. Only `nonce(2)` and byte 4 differ, and they differ between the two
+**A** mints as well - i.e. they are per-mint randomness, not a reaction to the input.
+
+So the head carries **no content binding**. If the token is bound to the request body at all (section 1
+observed that a token minted for one image is not accepted for another), the binding lives in the
+tagged records, not in the head - the candidates being the tag-18 blob, the 9-byte tag-99 record, or
+the `n` that sizes the bulk.
+
+Next: byte-diff two tokens whose `freq` differs (A vs B above) after masking the per-mint randomness,
+and look for a region that is stable between two A mints but changes on B. That is the only remaining
+way to find a content hash without decoding the records, and it needs the tokens saved, not just their
+heads.
