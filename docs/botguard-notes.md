@@ -2202,3 +2202,82 @@ flags = 0x75, 0x62, 0x63, 0x17      (14 of 14 logged runs, all five families)
 
 So the tags are stable across builds in this window (14 runs), and the rotating id is the *token field*, not the
 flag. Whether the tags rotate over time is untested - record the value per run, do not assume it.
+
+## 41. The tail records are a fixed serializer table, and its tags are protocol constants
+
+Section 39 left "which serializer function passes the flag" open. It is answerable statically: the
+emitters are called from a handful of literal call sites in the serializer, and the 4th argument at
+each of them is a **constant tag**. Grepping the emitter names in the interpreter text (skipping the
+definitions, arguments parsed with paren balance) gives the whole table. Fhxs:
+
+```
+qj(this, Q9(2,YI.length).concat(YI), 146, 18)     YI = z(311,this)
+qj(this, Q9(1,this.K+1>>1),          146, 117)
+ax(146,  Q9(2,T.length).concat(T),   this, 99)    T  = w(this,473)
+ax(473,  Q9(2,Z.length).concat(Z),   this, 98)    Z  = field 323 or 444
+qj(this, Q9(2,n).concat(AY(n)),      146, 23)     <- the bulk
+qj(this, [],                         146, 6)
+ax(146,  [],                         this, 231)
+qj(this, Q9(2,g.length).concat(g),   146, 132)    g  = field 311, sliced at 1E6
+```
+
+and EON has the same eight, with its own ids (`UC(36,this,299,vs(m.length,2).concat(m),18)`,
+`W(299,this,vs(aN.length,2).concat(aN),99)`, ...), as do pBm (`y4(366,mq(k.length,2).concat(k),this,99)`)
+and SnVl (`qh(483,this,pg(2,V6.length).concat(V6),99)`). The tag set is **identical in all four
+families**:
+
+```
+6, 18, 23, 98, 99, 117, 132, 231        (plus 17 on a non-token field in pBm)
+```
+
+So the flag is a **record type**, a literal in the interpreter text - not a per-build id and not a
+rotated tag. That supersedes the "per-build rotation" reading of section 39 and the "stable in this
+window" hedge of section 40: the tags are constants, and it is the *field ids* in the same call
+expressions (311, 473, 323/444, 299, 366, 483) that rotate.
+
+What each record carries, read off the call sites:
+
+| tag | payload | note |
+| --- | --- | --- |
+| 6 | empty | marker, no data |
+| 231 | empty | marker, no data |
+| 18 | `len16 + field(311)` | the collected blob |
+| 23 | `len16 + AY(n)` | the bulk, `n` derived from lengths |
+| 98 | `len16 + field(323/444)` | also emitted *into* field 473 in Fhxs |
+| 99 | `len16 + field(473)` | the 9-byte block seen in every run |
+| 117 | `len1 + (K+1>>1)` | a small counter |
+| 132 | `len16 + field(311)`, sliced at 1E6 | the tail |
+
+That is also the answer to "which handler produces the tail": none - the records are appended by the
+serializer after the program loop has finished (`rv` equals the final read count, section 39), and
+each one is a copy of another field's buffer, which is why field values appear verbatim in the token
+(section 37). The head, by contrast, is produced by program instructions (`[op, srcField, tokenField]`,
+section 39).
+
+### The bulk is random filler, not encrypted content (measured, all four families)
+
+`AY` is the same function that produces the 2-byte nonce in section 1 (`C = AY(2).concat(field146)`),
+and the bulk record is `Q9(2,n).concat(AY(n))`. The name rotates, but the function does not: it is the
+one whose body pushes `Math.random()*255|0`, and in every family the tag-23 argument is exactly that
+function:
+
+```
+Fhxs   .concat(AY(n)),146,23)     AY  = ...F.push(Math.random()*255|0)...
+pBm    .concat(LC(p)),this,23)    LC  = ...q.push(Math.random()*255|0)...
+SnVl   .concat(Kg(O)),23)         Kg  = ...y.push(Math.random()*255|0)...
+EON    .concat(sC(y)),23)         sC  = ...R.push(Math.random()*255|0)...
+```
+
+So the bulk payload is **`n` random bytes** - padding, sized by a length derived earlier in the same
+expression - and nothing is hidden in it. That accounts for every property measured in section 39
+(entropy 7.68 b/B, no ASCII runs, no nested length structure, length varying per run while the
+surrounding records stay fixed) and it means a reimplementation only has to emit `n` bytes from any
+RNG, not reproduce their content. The token's *information* is in the fixed records (18, 98, 99, 117,
+132), not in the bulk.
+
+Check it with one grep per family:
+
+```
+grep -o 'Math.random()\*255' interp.js          # -> the filler function
+grep -o '\.concat(\w+(\w+)),[^;]\{0,12\}23)' interp.js   # -> the tag-23 site uses it
+```
