@@ -3148,3 +3148,32 @@ work:
 * non-perturbing observation of the signing instance has to happen **below JavaScript**. That is the
   whole justification for the patched Chromium build: C++-level logging of eval/compile and of host
   object reads changes no JS source text, so the checks stay quiet.
+
+## 66. The dispatch loop can be logged from outside the VM - but only the degraded path
+
+`Yq` is the instruction loop, and it reads the field id of each instruction before dispatching it:
+
+```js
+if(y=Z(S,422), y>=f) break;                    // pointer vs program length
+X=(M=F(S,(q(376,S,y),5)), a(M,S));             // M = field id read from the stream, a(M,S) = accessor
+t(true,(X&&X[hf]&u ? X(S,k) : V_(S,[FK,21,M],J,1), k),13,S,false,false)
+```
+
+Logging `[pointer, M]` there (an array push inside the loop) is **non-perturbing in Node**: the token
+stays at 2893 chars and the same three TypeErrors appear. That gives the program's instruction stream
+from outside the VM for the first time:
+
+* Node: **756 instructions**, pointer 32 -> 175 840 of 180 448 bits - i.e. the program does *not* stop
+  early, it runs to ~97 % of its bytecode and then throws near the end. The earlier "3 evals" reading
+  (section 63) was the handler-eval count, not the instruction count.
+* the same patch in Chrome gives 884 instructions and a **1177-char / 882-byte token** - outside both
+  known regimes (trusted 1065-1087 B, degraded 2114-2170 B). So the patch is detected there, as every
+  text patch is (section 65): instrumenting Chrome's signing copy always lands it on a third path.
+* comparing the two streams, the first 49 instructions are identical and they diverge at index 50, where
+  Chrome executes `[61316, 37]` twice and Node once - a loop-count difference at the same program
+  position, not a different branch.
+
+Consequence for method: the instruction stream is observable in Node and *not* in a trusted Chrome run,
+so the two cannot be compared directly by this instrument. That is the case for the patched build: a
+C++-level eval log records the trusted path without touching a single JS source, and the field ids each
+handler reads can be recovered from the logged sources.

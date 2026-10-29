@@ -404,6 +404,28 @@ try {
       writeFileSync(`/tmp/frame_src_${i}_pad${pad}.js`, src);
     });
   }
+  {
+    // Instruction stream (research patch inside Yq: [pointer, fieldId] per dispatched instruction).
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__ops;
+      if (Array.isArray(arr) && arr.length) {
+        out["ops_" + n] = {n: arr.length, first: arr.slice(0, 8), last: arr.slice(-8)};
+        writeFileSync(`/tmp/ops_${n}.json`, JSON.stringify(arr));
+      }
+    }
+  }
+  {
+    // Dispatch stream (research patch: sn logs [pointer, kind] per step). Kept off the eval path, so
+    // it does not perturb: measured token length is unchanged with the patch applied.
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__sn;
+      if (Array.isArray(arr) && arr.length) {
+        out["sn_" + n] = {n: arr.length, first: arr.slice(0, 6), last: arr.slice(-6)};
+      }
+    }
+  }
   out.frames = shared.frames.length;
   {
     const f = shared.frames[0];

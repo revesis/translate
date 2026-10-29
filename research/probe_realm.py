@@ -80,7 +80,9 @@ MINT = r"""(async () => {
   };
   walk(window);
   const logs = realms.map((w) => { try { return w.__rlog || null; } catch (e) { return null; } });
-  return JSON.stringify({tok: tok, logs: logs});
+  // Instruction stream, when the material was patched to log it inside the dispatch loop.
+  const ops = realms.map((w) => { try { return w.__ops || null; } catch (e) { return null; } });
+  return JSON.stringify({tok: tok, logs: logs, ops: ops});
 })()"""
 
 
@@ -168,6 +170,10 @@ async def run(material_path: str, out: str, port: int, chrome: str = "/usr/bin/g
         tok = d.get("tok") or ""
         os.makedirs(out, exist_ok=True)
         json.dump(d, open(os.path.join(out, "realm.json"), "w"))
+        for i, o in enumerate(d.get("ops") or []):
+            if o:
+                json.dump(o, open(os.path.join(out, "ops_%d.json" % i), "w"))
+                print("ops realm", i, "n", len(o), "first", o[:4], "last", o[-4:])
         raw = tok[1:] if tok.startswith(";") else tok
         pad = "=" * (-len(raw) % 4)
         blob = base64.urlsafe_b64decode(raw + pad)
