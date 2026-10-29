@@ -96,6 +96,10 @@ argument that is not the instance).
 
 1. The 5 bytes above (instrument: field-buffer `Proxy`).
 2. `117`'s counter value (`this.K`) - readable from the instance, not yet correlated with the byte.
-3. The `18` / `132` sources' provenance in runs where they are non-empty.
-4. A pure-offline mint: the head template and the records are now specified, but nothing yet emits a
-   token Google accepts without a browser (section 1's trust gate is a separate problem).
+3. ~~The `18` / `132` sources' provenance in runs where they are non-empty.~~ **Answered (section 59):
+   tag 132's source is the VM's exception log** - `message + ":" + stack` per caught error, encrypted,
+   capped by the byte budget in field `468[0]`. A trusted mint catches nothing, so it has no tag-132
+   record; that is the whole difference between the 1075 B and 2114-2169 B regimes.
+4. A pure-offline mint: the head template and the records are now specified, and section 57-61 run the
+   VM itself in Node without a browser - the first 90 bytes of that token are a trusted token's. What
+   is missing is the program's full instruction sequence in a synthetic realm (section 61).

@@ -2854,3 +2854,163 @@ cosmetic and does not affect any of the above.
 
 The three remaining open items (tag-99 five bytes, per-load constant provenance, authentication
 construction) have their own handoff: `docs/HANDOFF-OPEN-ITEMS.md`. Start there.
+
+## 57. The build material needs no browser, and the interpreter runs in Node
+
+Sections 1-56 treated "the VM only runs in a browser" as the boundary. It is not the material's
+boundary: everything the VM needs ships *inline in the document*, so a plain `urllib` GET is enough.
+
+```
+python3 research/fetch_build.py --out /tmp/bgbuild
+# build U5tYCxBAtKrhIfdN  interp 66581 B  blob 30123 B  proto fields 8
+```
+
+`arr[0]` is the program blob (a base64 string with a 3-char prefix), `arr[2]` the interpreter hash,
+`arr[5][-1]` the interpreter source. No cookie, no UA beyond a desktop one, no JS execution.
+
+**The interpreter's whole environment surface is statically readable, and it is small.** Grepping the
+66 KB of minified source for every host object gives: `window.performance.now` (falls back to
+`+new Date`), `document.hidden`, `document.body`/`documentElement.lastChild`,
+`document.createElement("iframe")` + `style.display` + `src` + `load`/`error` +
+`contentWindow.location.href`, `window.btoa`, `e.trustedTypes`, `e.requestIdleCallback` /
+`e.setImmediate`, `Math.random`, `setTimeout`/`setInterval`, and `eval`. **`navigator` does not appear
+in the source at all** - not once, in any build measured. So whatever a browser contributes to the
+token, it is not `userAgent`/`plugins`/`webdriver`/`screen`; section 4's "copying the environment into
+jsdom does not help" was chasing a surface the interpreter never reads.
+
+`research/node_mint.mjs` is the harness: `node:vm` contexts as realms, a ~150-line DOM shim, no
+browser and no jsdom. It boots the VM for real:
+
+* `VM.a(arr[0], cb, true, document.body, noop, [[],[]], undefined, false, [noop x5])` returns the API;
+* the VM creates the iframe, sets `src` to `/_/TranslateWebserverUi/bscframe` (the interpreter resolves
+  it against the document itself), waits for `load`, and records the boot profile;
+* the frame realm is a *second* `vm` context, so it has V8's own intrinsics and a genuine native
+  `eval` - the thing jsdom cannot provide;
+* the interpreter is eval'd inside that frame (64-69 KB, padded with random newlines), and the program
+  runs there;
+* a token comes back.
+
+Boot profile recorded by the VM in Node: `A = [82, 0, 1, 15, 21]` - load on attempt 1, 0 ms load
+time, 21 ms from boot start. Chrome's own run records `[82, 0, 1, 15, 1399]`: same event sequence,
+real network latency. The frame path itself works outside a browser.
+
+## 58. The Node token is byte-identical to a trusted token for its first 90 bytes
+
+Same build material, minted twice: once in headless Chrome (the shipped path, section 21) and once in
+Node. Chrome: 1435 chars / 1075 B. Node: 2893 chars / 2169 B.
+
+```
+chrome  4a 54 | b8 54 30 | d0 00 06 7a 16 4e 5f 5a 16 | 5f 2b b0 0e ee 80 e2 f2 c8 26 00 40 01 10 0a ...
+node    fd e3 | b8 e3 b9 | d0 00 06 7a 16 4e 5f 5a 16 | 5f 2b b0 0e ee 80 e2 f2 c8 26 00 40 01 10 0a ...
+              ^ per-mint                        ^ identical from offset 5 to offset 89
+```
+
+Measured on both: bytes 5..89 are identical - the head template, the per-build marker, `5f`, both
+4-byte words, `26 00 40` and the whole 64-byte block. Only the per-mint bytes differ (the 2-byte nonce
+and the derived byte at offset 4). So the "per-load constants" of section 48 are **not** an environment
+snapshot: a Chrome realm and a Node realm produce the same ones from the same material. They are
+build/material-derived, and the environment does not enter the head at all.
+
+The two tokens diverge at offset 90 and differ in *length*, so the rest of this section is about the
+tail: what the VM appends after the head, and why a browser gets a short one.
+
+## 59. The VM records its own caught exceptions into the token - that is the length regime
+
+The emit hook (`research/bgpatch.py`, emit-only patch) runs on the Node side too, and it explains the
+whole difference. 24 emissions in one Node mint:
+
+```
+token field <- 1,2,6,1,4,4,1,2,64   the head, 85 B (identical to Chrome's)
+field 274   <- 858, 870, 2, 314     tag 23 records, flag 0x17
+token field <- 5 (tag 18), 1 (tag 117), 1 (untagged), 7 (tag 98), 14 (tag 99), 2054 (tag 132)
+```
+
+The 2054-byte tag-132 payload decodes to plaintext, and it is not padding:
+
+```
+03 58 "Cannot read properties of null (reading 'String'):TypeError: Cannot read properties of
+       null (reading 'String')\n    at eval (...) ... at Yq ... at sn ... at d.eval [as R] ..."
+03 64 "Cannot read properties of undefined (reading 'replace'):TypeError: ..."
+01 38 "V.apply is not a function:TypeError: V.apply is not a function ..."
+```
+
+That text is built by the error collector `V_` in the interpreter source:
+
+```js
+X="", k&&(k.message&&(X+=k.message), k.stack&&(X+=":"+k.stack)),
+y=C(J,468), y[0]>3;            // field 468's first byte is a byte budget
+  X=X.slice(0, y[0]); y[0]-=len; X=b7(2,X,J.T)   // b7 = the encoder, so the text is not plaintext in the token
+```
+
+So every exception the VM catches anywhere in the program is appended - message + `":"` + full stack,
+encrypted, length-capped by the budget in field 468 - and emitted as a **tag-132 record** into the
+token field. Consequences, all measured:
+
+* a **trusted** mint catches nothing, so it has no tag-132 record. Chrome's own concat profile for this
+  build is `[2,894,896] [2,1072,1074]` - two fields, no error field, 1074 B total;
+* a mint in a realm that makes the program throw carries the recorded text instead: 2054 B of it here,
+  which is why the Node token is 2169 B and why jsdom landed at 2114-2170 B;
+* section 2b's degraded profile - nine fields including **three byte-identical 542-byte blocks** - is
+  the same mechanism: three caught exceptions of equal length, recorded three times. The "degraded
+  token" is not a weaker token; it is a token with a crash log in it;
+* instrumentation makes the VM throw (a hook that runs inside the VM's own path), which is why
+  patched runs land in the long regime. The length is a symptom, not a branch decision.
+
+The first error in Node is `Cannot read properties of null (reading 'String')`, thrown inside the
+program's handler `GK`, which the program calls with `u === undefined`; the program then stops
+advancing (2 handler evals, then the error path), and what follows is the tail above. Chrome does not
+throw there.
+
+**Ruled out as the cause** (each one measured, token length unchanged at 2893 chars): `document.hidden
+= true`; `performance.now() -> 0`; adding `trustedTypes` + `requestIdleCallback` to the realm (Chrome
+has both, a bare `vm` context has neither); delaying the frame's `load` by 1 / 200 / 1200 ms (Chrome
+takes ~1.4 s because the frame is fetched over the network, Node fires immediately - it does not
+matter).
+
+## 60. What the frame realm does that a plain realm does not: it evals its own helpers
+
+`Debugger.scriptParsed` on a Chrome mint shows 245-260 *eval'd* scripts in the mint's frame realm, all
+with an empty URL, and they are the interpreter's own pieces:
+
+```
+[]  ({})  1  js  $q  a$  d  C
+C=function(J,k,u){...}   a=function(...){...}   q=function(...){...}   E=function(...){...}
+Z=function(...){...}     YU=function(...){...}  fC=function(...){...}  Ss=function(...){...}
+0,function(z){fC(6,z,21,0,1)}   0,function(z,g,V,L){L=n(h,32),V=W(5,z);...}
+var eval="wbytsbazhn";eval      (1).toString(0)   new Array(-1)   null.x
+```
+
+Read: the program does not just *run* in the frame realm, it **rebuilds the interpreter there by
+eval'ing source strings** - helper definitions as sloppy-mode global assignments, identifiers on their
+own, and deliberate error probes (`null.x`, `new Array(-1)`, `(1).toString(0)`) whose *messages* are
+mined for strings. That is the self-hosting step of section 26's "the inner text is patchable", seen
+from the other side: the frame realm is an eval sandbox, and the program's own instruction stream is
+what feeds it.
+
+Two traps measured on this line:
+
+* **A `console.log` inserted at the handler-eval site changes what the handler can resolve.** Patching
+  `function(w){return eval(w)}` to log the source first makes the very first program handler throw
+  `fC is not defined` - an error the pristine run does not have. The helpers are IIFE-locals reachable
+  only through the direct eval's scope chain, so any rewrite of that call site is a behavioural change.
+  Observe from `Array.prototype`/`btoa`/`Debugger`, never from the eval site.
+* **The frame realm's globals are not where the helpers live.** After a completed Chrome mint,
+  `typeof fC === "undefined"` inside the frame context (`Object.keys(window).length` 238). The eval'd
+  `fC=function(...)` assignments resolve inside the eval scope, not on the window. A Node realm with 37
+  globals and no `fC` is therefore *not* by itself evidence of a broken realm.
+
+## 61. Where the browserless mint stands
+
+Reproduced without a browser: the material (urllib), the interpreter install, the iframe boot, the
+frame realm, the program's eval sandbox, the head template and the per-build constants - the Node
+token's first 90 bytes equal a trusted Chrome token's. Not yet reproduced: the program's full
+instruction sequence in a synthetic realm. It advances two instructions and then throws, and the
+recorded text is what makes the token long.
+
+The open question is now narrow and instrument-shaped: **which value the program reads makes `GK` run
+with `u === undefined`** (and, downstream, `L.ue` not a function in the `V.apply` handler). Candidates,
+in order of cheapness to test in `research/node_mint.mjs`: the field-seeding order (the two
+`fC(6,z,2x,0,n)` writes happen before the error), `document.body`'s identity as passed to `VM.a`, and
+the element surface the program touches (section 57's list is the complete read surface, so any missing
+member is enumerable). `research/probe_realm.py` gives the same-build Chrome control for every step:
+boot profile, concat/field profile, pre-encode token bytes and the eval'd script list.

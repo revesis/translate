@@ -7,13 +7,61 @@ Written for a fresh session that continues the botguard work in this repo. Read 
 ## Where things stand
 
 The format is finished and executable: `research/assemble_token.py` rebuilds real tokens byte for byte
-on five build families (section 52). The offline-mint question is **closed** by four live requests
-(sections 53-56): an assembled token, a re-randomised nonce and a single changed byte all get the
-degraded echo, while the unmodified token gets OCR - so the token is authenticated end to end and only
-the VM can produce one. What remains is understanding, not capability: three narrow questions below.
+on five build families (section 52). Four live requests (sections 53-56) showed that no byte of a
+trusted token can be edited without losing the OCR, which closed the *byte-editing* route. It did not
+close minting, and that line is reopened here on a new route: run the vendor's own interpreter in Node
+instead of a browser (sections 57-61). `research/node_mint.mjs` already produces a token whose first 90
+bytes are identical to a trusted Chrome token minted from the same build material; what is missing is
+the program's full instruction sequence in a synthetic realm.
 
-Do not spend time on: offline minting (closed), jsdom minting (sections 1, 45: spent), the head's
-content binding (sections 49-51: none), or the marker (section 48: it is per build, not universal).
+Do not spend time on: re-randomising or editing a captured token (closed, sections 55-56), the head's
+content binding (none, sections 49-51), the marker as a universal constant (it is per build, section
+48), and the tag-99 five bytes (section 46: cosmetic). Those are spent. The jsdom line (sections 1, 45)
+is spent *as jsdom*; the same question in a `node:vm` realm is the live line - see item 0.
+
+---
+
+## Item 0 - a browserless mint (primary)
+
+**What is established (measured, sections 57-61).**
+
+* The build material needs no browser: `research/fetch_build.py` gets the interpreter (66 KB) and the
+  program blob from one `urllib` GET.
+* The interpreter's complete host-object surface is small and static: `performance.now`, `+new Date`,
+  `document.hidden`, `document.body`, `createElement("iframe")` + `src` + `load`/`error` +
+  `contentWindow.location.href`, `btoa`, `trustedTypes`, `requestIdleCallback`, `Math.random`,
+  `setTimeout`/`setInterval`, `eval`. **`navigator` is never read** - any explanation that starts with
+  `userAgent` is wrong for this VM.
+* `research/node_mint.mjs` (Node + `node:vm`, no browser, no jsdom) installs the VM, boots the frame
+  (`/_/TranslateWebserverUi/bscframe`, load on attempt 1), runs the program in a second realm that has
+  a genuine native `eval`, and mints. Token: 2893 chars / 2169 B.
+* Bytes 5..89 of that token are **identical** to a trusted Chrome mint of the same material (1075 B):
+  head template, per-build marker, `5f`, both 4-byte words, `26 00 40`, the 64-byte block. The "per-load
+  constants" are build/material-derived, not an environment snapshot.
+* The length difference is a **crash log**: the interpreter's collector `V_` appends every caught
+  exception as `message + ":" + stack` into field 468 (byte budget = `468[0]`), the serializer emits it
+  as a **tag-132 record** - 2054 B in the Node run. A trusted mint catches nothing and has no tag-132
+  record. Section 2b's "three identical 542-byte blocks" are three recorded exceptions.
+
+**What is open.** The program advances two instructions in Node and then throws
+(`Cannot read properties of null (reading 'String')` in handler `GK`, called with `u === undefined`;
+downstream `L.ue` is not a function). Chrome does not throw there. Fix that and the token should drop
+into the trusted size range; only then is a live request worth spending.
+
+**Next step, in order.**
+
+1. Log the field table (`vm.u`) and the two `fC(6,z,2x,0,n)` writes at the moment `GK` is entered, in
+   Node; compare with the same point in `research/probe_realm.py` (Chrome, same material, hooks are
+   invisible to the VM). The question is a value, not a mechanism.
+2. If the value comes from the element/`document.body` surface, extend the shim only along section 57's
+   read list - nothing else is reachable.
+3. When the token lands at ~1075 B, mint twice in one process and check that only the nonce/byte-4
+   differ (section 58's invariant), then spend one live request (`research/live_test.py`) with a
+   Node-minted token in a Chrome-minted envelope.
+
+**Trap.** Never observe by patching an eval site: adding a `console.log` to
+`function(w){return eval(w)}` makes the first handler throw `fC is not defined`. Use
+`Array.prototype`/`btoa` hooks or the CDP `Debugger`, and keep text patches off the eval path.
 
 ---
 
@@ -143,6 +191,9 @@ send synthetic tokens on your own. Prefer offline tests against captured tokens.
 
 | tool | purpose |
 | --- | --- |
+| `research/fetch_build.py` | one load's material over plain `urllib` - interpreter + program blob, no browser |
+| `research/node_mint.mjs` | mint in Node: `node:vm` realms + a small DOM shim, no browser, no jsdom |
+| `research/probe_realm.py` | same-build Chrome control: boot profile, concat/field profile, token bytes, eval'd scripts |
 | `research/run_one.py` | one load, one mint: boundaries, reads, writes, emissions (`--freq FILE` for the payload) |
 | `research/align_emits.py` | is the token exactly `flag+payload` per emission? finds the token field by content |
 | `research/disasm.py` | instruction table, per-op profile, `--dataflow`, `--emit-log` |
