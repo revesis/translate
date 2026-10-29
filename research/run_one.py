@@ -58,7 +58,7 @@ JS = r"""(async () => {
 })()"""
 
 
-async def run(port: int, out: str, ixproxy: bool = False) -> None:
+async def run(port: int, out: str) -> None:
     freq_path = os.path.join(HERE, "freq.txt")
     freq = open(freq_path).read() if os.path.exists(freq_path) else "hello"
     cs = dp.CS(dp.CHROME, port, DEFAULT_UA, "/tmp/bg-one-%d" % port)
@@ -84,11 +84,10 @@ async def run(port: int, out: str, ixproxy: bool = False) -> None:
         mode = "full"
         try:
             src, info = bgpatch.patch(plain, blockcache=False, writes=True, loop=True,
-                                      handlers=True, fieldread=True, emit=True, ixproxy=ixproxy)
+                                      handlers=True, fieldread=True, emit=True)
         except SystemExit as e:
             print("full patch failed (%s); retrying with emit only" % e)
-            src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, emit=True,
-                                      ixproxy=ixproxy)
+            src, info = bgpatch.patch(plain, entry=False, ret=False, boot=False, emit=True)
             mode = "emit-only"
         arr[2] = base64.urlsafe_b64encode(hashlib.sha256(src.encode()).digest()).decode().rstrip("=")
         print("build", tag, "mode", mode,
@@ -106,10 +105,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=10290)
     ap.add_argument("--out", default="/tmp/bg-one")
-    ap.add_argument("--ixproxy", action="store_true",
-                    help="also wrap field accessors in a Proxy that logs index writes (section 44)")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out, a.ixproxy))
+    asyncio.run(run(a.port, a.out))
 
 
 if __name__ == "__main__":

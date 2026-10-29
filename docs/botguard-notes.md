@@ -2441,3 +2441,45 @@ Two things this round did establish, independent of the five bytes:
   traffic - the same class of mistake as the emit hook logging `data` but not the flag byte;
 * `--ixproxy` costs nothing when off, and with it on the token and the emission log are unchanged
   (25 emissions, trusted length), so the wrapping itself is inert rather than harmful.
+
+## 46. The five bytes are closed as a known unknown: both instrument routes are dead ends
+
+Section 44 proposed a `Proxy` over the field buffer, section 45 showed the proxy version is inert.
+This section records the two further attempts and why the line is being closed rather than continued.
+
+**Attempt 2 - wrap the slot's methods (not its indices).** Replaced the Proxy with per-slot wrappers
+around `push`/`concat`/`create`, logging `(fieldId, method, length before/after, first argument)`.
+Offline clean on Fhxs/pBm; live: 457 emissions (vs the usual ~20), `__ixlog` empty. Wrapping the
+*definition* by name is the flaw - names are reused within one build (section 15), so the wrapped
+`z`/`w` is not the function the emitters call.
+
+**Attempt 3 - wrap the emitter's own call expression instead of the definition.** This is the correct
+shape (it is the same function object by construction), and it exposed the real blocker with a clean
+measurement: an **entry counter injected into the accessor body read 0 while 21 emissions fired**
+(and 0 again on an EON run with 18). So the emitter that produces the emissions does not go through
+the accessor whose call sits in its text - i.e. the copy that runs is not the copy that is being
+instrumented, which is the section-24 problem in a new place.
+
+**Attempt 4 - inline the wrapper at the call site** (a named helper appended to the source is not in
+scope in the running copy, and its `ReferenceError` aborts the patched mint while the page's pristine
+copy still returns a token, which is exactly why the counters read 0). This one does not compile yet:
+the call-site offsets are collected *before* the emit-hunk injections, which shift the text, so the
+replacement lands in the wrong place (`node --check` fails). Fixing it needs `patch_emit` split into
+detect -> inject -> re-detect, which is a real refactor, not a tweak.
+
+Decision: stop. The five bytes are 5 of ~750 in a token that is already accounted for everywhere else,
+they do not participate in the trust decision (length, marker and nonce all unaffected), and four
+attempts have cost more than the format work they would unlock. Recorded as a known unknown:
+
+* the tag-99 record is `len16 + field`, the field is `RNG(4)` + 5 bytes;
+* those 5 bytes are not `Math.random`, not the clock, not an emitter call (section 44);
+* they are appended to the slot's internal array, which no instrument installed so far can see.
+
+If someone reopens it: the two-pass refactor of `patch_emit` is the prerequisite, and the measurement
+that says you have it right is the accessor entry counter being non-zero on a run with emissions.
+
+**What is left that is worth more:** the head template. The op table (163 / 460 / 490 / 118) and the
+record table are specified; what is not yet done is proving where the *source fields* of the head
+chunks (the marker, the 64-byte block, the two 4-byte words) get their values - that is the body of a
+reimplementation, and unlike these 5 bytes it is measurable with the tools that already work
+(`record_map.py` joins a field to the op that wrote it).
