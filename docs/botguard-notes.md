@@ -3127,3 +3127,24 @@ supplies (a timing sample or `document.body`'s identity), lands on the branch th
 the one that writes it, and the missing slot is the *symptom* rather than the cause. If the op map says
 45 is written by an instruction that only runs on the other branch, the divergence is one comparison
 earlier and that comparison is where the realm difference has to be found.
+
+## 65. The VM checks its own function sources: any edit to the eval wrapper kills the mint
+
+One line added to the handler-eval function - `function(w){return eval(w)}` becomes
+`function(w){try{(globalThis.__hs=globalThis.__hs||[]).push(String(w))}catch(e){}return eval(w)}`, i.e.
+an array push and no I/O - and the mint returns a **43-character token** (the interpreter's `FNL` error
+token, section 10) instead of 2893. Nothing else changed: same material, same realm, same call.
+
+That is not a timing effect (a push costs microseconds and the earlier `console.log` version failed the
+same way, as did the call-through). It is the interpreter stringifying its own functions: the eval
+wrapper's `toString()` is part of what it checks, so *every* source-level edit of a function that lands
+in the signing copy is detected, no matter how harmless. Two consequences that shape the rest of this
+work:
+
+* the page copy is safe to patch (the emit hook, the collector log, the reader logs all worked there)
+  while the **signing copy is not** - which is also why the frame copy is *generated* per run rather
+  than evaluated from the text we pass (section 62): the program assembles a source whose functions
+  stringify to what it expects;
+* non-perturbing observation of the signing instance has to happen **below JavaScript**. That is the
+  whole justification for the patched Chromium build: C++-level logging of eval/compile and of host
+  object reads changes no JS source text, so the checks stay quiet.

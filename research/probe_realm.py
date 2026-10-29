@@ -121,12 +121,12 @@ class RS(ChromeSession):
             pass
 
 
-async def run(material_path: str, out: str, port: int) -> None:
+async def run(material_path: str, out: str, port: int, chrome: str = "/usr/bin/google-chrome-stable") -> None:
     m = json.load(open(material_path))
     arr = m["arr"]
     interp = arr[5][-1]
     freq = open(os.path.join(HERE, "freq.txt")).read()
-    cs = RS("/usr/bin/google-chrome-stable", port, DEFAULT_UA, "/tmp/bg-realm-%d" % port)
+    cs = RS(chrome, port, DEFAULT_UA, "/tmp/bg-realm-%d" % port)
     await cs.start()
     try:
         await cs.send("Runtime.enable")
@@ -182,8 +182,9 @@ def main() -> None:
     ap.add_argument("--material", default="/tmp/bgbuild/material.json")
     ap.add_argument("--out", default="/tmp/bg-realm")
     ap.add_argument("--port", type=int, default=10301)
+    ap.add_argument("--chrome", default="/usr/bin/google-chrome-stable")
     a = ap.parse_args()
-    asyncio.run(run(a.material, a.out, a.port))
+    asyncio.run(run(a.material, a.out, a.port, a.chrome))
 
 
 if __name__ == "__main__":
