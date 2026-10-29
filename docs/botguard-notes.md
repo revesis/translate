@@ -2588,3 +2588,39 @@ Next: byte-diff two tokens whose `freq` differs (A vs B above) after masking the
 and look for a region that is stable between two A mints but changes on B. That is the only remaining
 way to find a content hash without decoding the records, and it needs the tokens saved, not just their
 heads.
+
+## 50. A/B/A diffing finds no content-bound byte, and points at the record that is always empty
+
+Section 49 left one test: diff two tokens whose content string differs, masking per-mint noise. Tool:
+`research/diff_tokens.py` - mint A, B, A' in one load (B differs only in `freq`), then treat
+everything that differs between A and A' as noise and ask whether B differs from A anywhere that A and
+A' agree.
+
+```
+build FhxsKBPKEL3Q_7SA   lengths A 1076  B 1082  A' 1082
+  A  head 82 9c b8 9c f8 | marker | 5f 74 33 50 60 3c ec 5d b2 26 ...
+  B  head 6c 72 b8 72 16 | marker | 5f 74 33 50 60 3c ec 5d b2 26 ...
+  A vs A': common prefix from 5 = 93 B, common suffix = 0 B
+  content-sensitive positions: 0
+```
+
+Reading:
+
+* the **first 93 bytes after the nonce are stable across mints** - that is the head (3 + 9 + 4 + 4 + 1
+  + 2 + 64 = 87) plus the first few record bytes - and B matches A on every one of them;
+* **nothing after that is stable**: the common suffix between two mints of the *same* input is 0
+  bytes, so the whole tail (records + bulk) is per-mint. The 6-byte length difference between A and A'
+  is in that tail, not a reaction to B;
+* therefore no byte of the token that a caller could see is a function of the content string, at least
+  for a synthetic `freq`.
+
+Where the binding can still be: the **tag-18 record**. Its payload is `len16 + field(311)`, its call
+site is guarded by `YI.length > 0`, and in every run measured so far that field was empty (a 0-byte
+write), so the record never appears. That is exactly the record a content hash would live in, and the
+reason the diff above cannot see it. Testing it needs a `freq` that actually populates the field - i.e.
+a real `f_req` for the live RPC rather than `research/freq.txt`'s shape - which is a load-generation
+problem, not an instrumentation one.
+
+Until then, the honest summary is: the token's stable content is per-load environment data plus a
+per-build tag; the per-mint tail is randomness; no content binding was found in any part a synthetic
+request exercises.
