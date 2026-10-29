@@ -110,7 +110,7 @@ def classify(raw: str, status: int) -> tuple:
 
 
 async def run(port: int, out: str, dry: bool, control: bool = False,
-              control_fresh: bool = False) -> None:
+              control_fresh: bool = False, control_byte4: bool = False) -> None:
     os.makedirs(out, exist_ok=True)
     img_path = os.path.join(out, "text.png")
     image = make_image(img_path)
@@ -126,7 +126,26 @@ async def run(port: int, out: str, dry: bool, control: bool = False,
     body = raw_token[1:]
     body += "=" * (-len(body) % 4)
     raw_bytes = b64mod.urlsafe_b64decode(body)
-    if control_fresh:
+    if control_byte4:
+        from bgr_sidecar import LocalSigner
+        signer = LocalSigner(profile_dir="/tmp/bg-live-signer").start()
+        try:
+            out_sign = signer.sign(cap["freq"])
+        finally:
+            signer.stop()
+        bgr = out_sign["bgr"]
+        pristine = json.loads(bgr)[0]
+        pb = pristine[1:]
+        pb += "=" * (-len(pb) % 4)
+        raw_p = b64mod.urlsafe_b64decode(pb)
+        out_b = bytearray(raw_p)
+        old = out_b[4]
+        out_b[4] = (old ^ 0xFF) if old != (old ^ 0xFF) else (old + 1) & 0xFF
+        token = ";" + b64mod.urlsafe_b64encode(bytes(out_b)).decode().rstrip("=")
+        print(f"  pristine {len(pristine)} chars ({len(raw_p)} B)  byte4 {old:02x} -> {out_b[4]:02x}"
+              f"  nonce untouched ({raw_p[0]:02x} {raw_p[1]:02x})  same length="
+              f"{len(token) == len(pristine)}")
+    elif control_fresh:
         # parse the trusted token: keep every per-load constant, replace only the nonce and the bulk.
         # The bulk is the tag-23 record: 0x17, a 2-byte length, then exactly that many bytes to the end.
         from bgr_sidecar import LocalSigner
@@ -227,6 +246,9 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=10750)
     ap.add_argument("--out", default="/tmp/bg-live")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--control-byte4", action="store_true",
+                    help="pristine token with ONLY byte 4 changed: discriminates 'nonce is bound' "
+                         "from 'any single-byte edit breaks it'")
     ap.add_argument("--control-fresh", action="store_true",
                     help="pristine token from the signer, then a fresh nonce and a fresh bulk, "
                          "everything else kept: does the service accept a re-randomised token?")
@@ -234,7 +256,7 @@ def main() -> None:
                     help="send a browser-minted (pristine) token in the same envelope instead of the "
                          "assembled one: the control for section 53")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out, a.dry_run, a.control, a.control_fresh))
+    asyncio.run(run(a.port, a.out, a.dry_run, a.control, a.control_fresh, a.control_byte4))
 
 
 if __name__ == "__main__":

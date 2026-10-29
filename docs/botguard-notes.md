@@ -2812,3 +2812,42 @@ What this already rules out, together with section 54:
 
 The practical conclusion stands and is now better supported: the Chrome sidecar is the only working
 signer, and the token is not something a reimplementation can mint from the outside.
+
+## 56. Any single-byte edit of a trusted token loses the OCR: the line is closed
+
+Section 55 left one discriminator: change **only byte 4** (the RNG-derived byte, nonce untouched) and
+see whether the echo is caused by the nonce being bound or by any edit at all. One request:
+
+```
+pristine 1419 chars (1063 B)   byte4 d5 -> 2a   nonce untouched (af b1)   same length
+HTTP 200  class=verified/echo  1 element, image byte-identical to the upload
+```
+
+Combined with the previous two requests:
+
+| token sent | edit | answer |
+| --- | --- | --- |
+| assembled from a patched mint's constants | many bytes | `200` echo |
+| pristine, re-randomised nonce (bytes 0/1/3) | 3 bytes | `200` echo |
+| pristine, byte 4 only | 1 byte | `200` echo |
+| pristine, unmodified (control) | none | `200` **accepted**, OCR + translation |
+
+So **no single byte of the token can be changed without losing the OCR**, while the unmodified token
+gets it. The token is authenticated end to end: the values the VM generates (nonce, the derived byte,
+the per-load constants) are inside whatever the server checks, and the structure we reverse-engineered
+is the *encoding* of that authenticated blob, not a document the caller can rewrite.
+
+That closes the offline-mint question, definitively:
+
+* the format work (sections 36-52) is complete and executable - `assemble_token.py` rebuilds real
+  tokens byte for byte, and the server accepts the *structure* (no `400`/`er` for our builds);
+* but a token cannot be **constructed** outside the VM: every byte is authenticated, so the only
+  tokens that work are ones the VM itself produced;
+* what remains possible outside the VM is what section 1 already measured: **replay** a freshly minted
+  token (it stays valid for minutes and is payload-independent per section 51), which is exactly what
+  the shipped sidecar does.
+
+Practical consequence: nothing changes for the product. `bgr_sidecar.py` stays the signer, `/translate`
+needs no token, `/translate/image` needs the sidecar, and local OCR remains the browserless option for
+images. The research line is finished; the remaining open item (the tag-99 five bytes, section 46) is
+cosmetic and does not affect any of the above.
