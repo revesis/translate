@@ -2519,3 +2519,47 @@ kind of thing section 43 showed to be RNG or counters, which is the next thing t
 Caveat: the last row of a run is sometimes an untagged emit (`ax(146, Q9(1, this[zF].length), this)` in
 Fhxs) whose source field has no logged writer, so it shows `-`. That is the counter byte, not a
 missing record.
+
+## 48. The head splits into per-mint and per-load parts, and the marker is per build
+
+Section 47 said the head is mechanical and the open question was the *values*. Three mints inside one
+page load answer it (`/tmp/twice.py` recipe: mint three times from the same `VM.a(...)` instance):
+
+```
+build SnVlM0KMiNaWq5YD
+  mint0 1064B  cd d3 b8 d3 b7 | d0 00 06 7a 16 4e 5f 5a 16 | 5f 44 31 b4 88 a6 d6 b9 a6 26 00 40 01 10 0a d9
+  mint1 1070B  1f 01 b8 01 65 | d0 00 06 7a 16 4e 5f 5a 16 | 5f 44 31 b4 88 a6 d6 b9 a6 26 00 40 01 10 0a d9
+  mint2 1070B  01 1f b8 1f 7b | d0 00 06 7a 16 4e 5f 5a 16 | 5f 44 31 b4 88 a6 d6 b9 a6 26 00 40 01 10 0a d9
+```
+
+| bytes | value | varies |
+| --- | --- | --- |
+| 0-1 | nonce, `nonce[0]^nonce[1] == 0x1e` | per mint |
+| 2 | `b8` | never |
+| 3 | `nonce[1]` | with the nonce |
+| 4 | one byte | per mint; constant (`ee`) under RNG pinning, so derived from the same random stream |
+| 5-13 | `d0 00 06` + 6 bytes | 6 bytes are **per build** |
+| 13-14 | `5f 44` | per load |
+| 14-22 | two 4-byte words | **per load** (identical across the three mints) |
+| 22-25 | `26 00 40` | never |
+| 25-89 | 64-byte block, starts `01 10 0a d9` | per load (same prefix in all three) |
+
+Two corrections to earlier sections:
+
+* **the 8-byte "marker" is per build, not universal.** Section 1 called it "the only thing both shapes
+  share", which is true for the two shapes of one build, but the value differs between families:
+  Fhxs / EON / pBm emit `00 06 0b 77 65 eb 2b 77`, SnVl / X9X8 / U5tYCx emit `00 06 7a 16 4e 5f 5a 16`
+  (stable across runs of the same family). So it must be read from the build, not hard-coded.
+* **the two 4-byte words and the 64-byte block are per *load*, not per mint.** That is why pinning the
+  RNG or the clock never stabilised them across runs: every run was a fresh load with its own values.
+  They are session/environment data (the thing the VM collects), which a reimplementation has to take
+  from its caller rather than compute - the opposite of the nonce, which it can generate.
+
+So the head is: 3 bytes of per-mint randomness (2 nonce + 1 derived), a per-build 6-byte tag, and
+per-load constants (`5f 44`, two words, the 64-byte block) - the last group being the only part that
+carries information about the client.
+
+Still open on this line: how the per-load words are computed (they are not RNG and not the clock -
+section 44's exclusions apply to them as well), and whether `5f 44` and the 64-byte block are also
+environment-derived. The discriminating experiment is the same one that produced the table: mint
+twice, change exactly one input between mints (e.g. `freq`), and see which head bytes move.

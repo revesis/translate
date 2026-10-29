@@ -60,6 +60,8 @@ async def run(port: int, out: str, mode: str = "filler") -> None:
         if mode in ("date", "both", "all"):
             pinned, ndate = re.subn(r"\+new Date", DATE_PIN, pinned)
         nperf = 0
+        if mode in ("perf", "all"):
+            pinned, nperf = re.subn(r"performance\.now\(\)", "0", pinned)
         if mode == "all":
             # the remaining time sources: bare `new Date`, `performance.now()`
             pinned, nperf = re.subn(r"performance\.now\(\)", "0", pinned)
@@ -104,7 +106,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=10530)
     ap.add_argument("--out", default="/tmp/bg-rng")
-    ap.add_argument("--mode", choices=("filler", "random", "date", "both", "all"), default="filler")
+    ap.add_argument("--mode", choices=("filler", "random", "date", "both", "perf", "all"),
+                    default="filler")
     a = ap.parse_args()
     asyncio.run(run(a.port, a.out, a.mode))
 
