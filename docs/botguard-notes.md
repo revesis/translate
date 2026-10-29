@@ -2851,3 +2851,6 @@ Practical consequence: nothing changes for the product. `bgr_sidecar.py` stays t
 needs no token, `/translate/image` needs the sidecar, and local OCR remains the browserless option for
 images. The research line is finished; the remaining open item (the tag-99 five bytes, section 46) is
 cosmetic and does not affect any of the above.
+
+The three remaining open items (tag-99 five bytes, per-load constant provenance, authentication
+construction) have their own handoff: `docs/HANDOFF-OPEN-ITEMS.md`. Start there.

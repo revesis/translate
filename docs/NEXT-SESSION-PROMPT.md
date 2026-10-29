@@ -1,3 +1,10 @@
+# 注意：本文件已被 docs/HANDOFF-OPEN-ITEMS.md 取代
+
+字节码反编译那条线（本文件下面的内容）已经完成，结论固化在 docs/botguard-notes.md §9–§38 和
+docs/token-format.md。新会话请从 docs/HANDOFF-OPEN-ITEMS.md 开始——那里只剩三个开放项。
+
+---
+
 继续 Google BotGuard 字节码反编译（接着上一段工作的进度，不要从头重来）
 
 工作目录：/root/codex/google-translate（git 远程 git@github.com:revesis/translate.git，分支 main）
