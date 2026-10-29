@@ -2693,3 +2693,51 @@ the bulk, and emit a token of the same length with the marker intact. What it do
 whether Google accepts it - that is section 1's trust gate, and testing it needs a live request with a
 full envelope (cookies, `f.sid`, `bl`, attested headers), i.e. a decision about sending a synthetic
 token to the service rather than another read-only measurement.
+
+## 53. One live request with an assembled token: the format is accepted, the echo is the environment
+
+Section 52 left one question: does the service accept a token whose nonce and bulk were generated
+outside the VM? One controlled request, no retries (approved as a single attempt):
+
+* one page load in headless Chrome, desktop UA: cookies, `f.sid`, `bl` and a patched mint from that
+  same load (the per-load constants);
+* `research/assemble_token.py --fresh` rebuilt the token with a new nonce and a fresh bulk - same
+  length as the captured one (895 chars);
+* one POST to `/TranslateWebserverUi/data/batchexecute` with the wrapped bgr header
+  (`[token,null,null,214,4,null,null,0,"2"]`), the attested client hints, the page's cookies, and the
+  image (`BACKUP JOB FAILED ON NODE DB-07`, 1000x260, clear text).
+
+Result:
+
+```
+HTTP 200
+wrb.fr payload: 1 element  ->  [[<base64 image>, "image/png"]]
+the returned image is byte-identical to the upload (sha256 match)
+```
+
+Reading:
+
+* **the token verified.** A token that fails verification answers `400` with an `er` chunk (section 1);
+  this one did not. So the assembled bytes pass whatever structural check the server runs - the
+  format work is complete enough to be accepted as a token.
+* **the response is the degraded echo, not "no text found".** The image carries large clear text and
+  the echo is byte-identical to the upload, which is the signature section 1 documented for a client
+  the service does not trust (`[[b64, mime]]` with nothing extracted). "No text found" would have to
+  come from OCR that ran and produced nothing, which is implausible for this image.
+* **so the discriminator is not the token's bytes.** A byte-correct token from an untrusted
+  environment is still served the echo - which is the section-1 conclusion reached from the opposite
+  direction: the gate attests the client, not the token.
+
+Caveats, stated plainly:
+
+* the constants came from a *patched* mint in headless Chrome, i.e. exactly the client that gets
+  degraded; a browser-minted token in the same envelope is the missing control, and it would cost a
+  second request (not run, per the single-attempt rule). Section 21's shipped-path measurement
+  (in-process signer, real image, `found_text=True`) is the informal stand-in;
+* the envelope was rebuilt by hand (cookies from the load, fixed `_reqid`), so "the envelope was
+  wrong" cannot be fully excluded as the reason for the echo - but a wrong envelope answers `400`,
+  and this was a clean `200`;
+* one request is one data point; nothing here says a *trusted* client would accept a synthetic token,
+  only that the token itself is not what the gate is looking at.
+
+Reproduce: `python3 research/live_test.py --port N --out DIR` (add `--dry-run` to stop before the POST).
