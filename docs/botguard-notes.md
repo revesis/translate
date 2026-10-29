@@ -3096,3 +3096,34 @@ length is downstream of how far the program's instruction stream gets. Watch it 
 `node research/node_mint.mjs --trace --eval-log` (the eval hook perturbs, so use it as a relative
 counter only) or by counting `Debugger.scriptParsed` entries in the Chrome control
 (`research/probe_realm.py`).
+
+## 64. The stream diverges on field 45: the program asks for a slot nothing wrote
+
+The second accessor (`a`, the one that throws `[FK,30,f]`) and the slot deleter (`fT`, which sets
+`S.u[f] = void 0`) patched to log, on the same run that throws the three TypeErrors:
+
+```
+A-MISS 4
+FT 422 [object Object]
+A-MISS 45
+FT 422 [object Object]
+A-MISS 45      (x N, repeating)
+```
+
+So: **field 4 is asked for once and never seeded, then field 45 is asked for on every subsequent
+step**, while the dispatcher keeps deleting/rewriting field 422 (the instruction pointer). The head
+has already been written at that point (section 59's emit map), so the boot is fine - it is the
+program's own instruction stream that diverges at instruction ~3, and from then on it keeps asking for
+a slot that no instruction in this run wrote.
+
+That is a concrete, look-up-able target: `45` is an ordinary field id, so the op map answers it
+offline - `python3 research/disasm.py RUN.json --table` / `research/record_map.py` on a Chrome run will
+name the instruction that writes field 45 and the op that reads it. Nothing about this needs another
+live request, and nothing about it is a realm surface (sections 62-63 ruled those out): the realm is
+good enough to boot the frame, write the head and run three instructions.
+
+Working hypothesis to test against the op map: the program takes its first branch on a value the realm
+supplies (a timing sample or `document.body`'s identity), lands on the branch that reads 45 instead of
+the one that writes it, and the missing slot is the *symptom* rather than the cause. If the op map says
+45 is written by an instruction that only runs on the other branch, the divergence is one comparison
+earlier and that comparison is where the realm difference has to be found.
