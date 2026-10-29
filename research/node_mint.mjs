@@ -25,6 +25,7 @@ const opt = (name, dflt) => {
 };
 const DEBUG = args.includes("--debug");
 const TRACE = args.includes("--trace");
+const EVAL_LOG = args.includes("--eval-log");
 const materialPath = opt("material", "/tmp/bgbuild/material.json");
 const FRAME_DELAY = Number(opt("frame-delay", "1"));
 const ENV = (opt("env", "") || "").split(",").filter(Boolean);
@@ -37,6 +38,8 @@ const interp = interpFile ? readFileSync(interpFile, "utf8") : arr[5][arr[5].len
 const freq = readFileSync(freqPath, "utf8");
 
 const log = (...a) => { if (DEBUG || TRACE) console.log("[dbg]", ...a); };
+let evalSeq = 0;
+const CAPTURED = [];
 if (TRACE) {
   process.on("uncaughtException", (e) => log("UNCAUGHT", String(e && e.stack ? e.stack.split("\n").slice(0, 4).join(" | ") : e)));
   process.on("unhandledRejection", (e) => log("REJECTED", String(e)));
@@ -131,6 +134,9 @@ function makeRealm(label, shared) {
     nodeType: 9,
     contentType: "text/html",
     hidden: ENV.includes("hidden"),
+    URL: "https://translate.google.com/?sl=auto&tl=zh-CN&op=images",
+    scripts: [],
+    all: undefined,
     visibilityState: "visible",
     readyState: "complete",
     cookie: "",
@@ -211,6 +217,22 @@ function makeRealm(label, shared) {
   const extra = {};
   // Chrome exposes both of these; a bare vm context does not. The interpreter branches on
   // them, so their absence is a real environment difference, not a detail.
+  if (ENV.includes("win")) {
+    // The Window surface a real frame has and a bare realm does not. `length` is the frame count,
+    // `frameElement` the embedding element - both are cheap to get wrong and invisible in a shim.
+    extra.length = shared.frames.length;
+    extra.frameElement = null;
+    extra.screenX = 0; extra.screenY = 0; extra.scrollX = 0; extra.scrollY = 0;
+    extra.localStorage = { getItem: () => null, setItem() {}, removeItem() {}, clear() {}, length: 0 };
+    extra.sessionStorage = extra.localStorage;
+    extra.crypto = { getRandomValues: (a) => { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); return a; } };
+    extra.indexedDB = undefined;
+    extra.chrome = undefined;
+    extra.Notification = undefined;
+    extra.WebGLRenderingContext = undefined;
+    extra.RTCPeerConnection = undefined;
+    extra.customElements = { get: () => undefined, define() {}, whenDefined: () => Promise.resolve() };
+  }
   if (ENV.includes("idle")) {
     extra.requestIdleCallback = (fn) => setTimeout(() => fn({ didTimeout: false, timeRemaining: () => 50 }), 1);
     extra.cancelIdleCallback = (id) => clearTimeout(id);
@@ -224,6 +246,11 @@ function makeRealm(label, shared) {
       getPolicyNames: () => ["default"],
       emptyHTML: "",
     };
+  }
+  if (TRACE) {
+    // Sink for the frame source the VM builds. A Node function on the sandbox is callable from the
+    // realm, which avoids every question about where `globalThis` points inside the minified code.
+    g.__capture = (src) => { CAPTURED.push(String(src)); };
   }
   Object.assign(g, extra, {
     window: g,
@@ -268,13 +295,26 @@ function makeRealm(label, shared) {
   });
   // `Math`/`Date`/`JSON`/`String`/... come from the context's own intrinsics: do not
   // assign Node's copies onto the global, that would defeat the point of a real realm.
-  if (TRACE) {
+  if (TRACE && EVAL_LOG) {
     // Diagnostic only: show every eval the VM performs in this realm and whether it throws.
+    // Off by default: replacing `window.eval` makes the program's handler eval indirect, and the
+    // first handler then throws `fC is not defined` (measured). Text patches are safe; this is not.
     const origEval = g.eval;
     g.eval = function (src, ...rest) {
       let out, err = null;
       try { out = origEval(src, ...rest); } catch (e) { err = String(e).slice(0, 300); }
       log(label, "eval", String(src).length, JSON.stringify(String(src).slice(0, 70)), err ? "THREW " + err : "ok:" + typeof out);
+      // The frame-side source is NOT the file we pass in (measured: 64841 vs 66581 B), so a stack
+      // position is only readable against the text that was actually evaluated. Keep the big one.
+      if (String(src).length > 10000) {
+        // A sourceURL turns "<anonymous>:1340:32236" into "<file>:line:col" for the text that was
+        // actually evaluated. The frame copy is generated per run (62-66 KB, length varies), so a
+        // position is only meaningful against that run's own file.
+        evalSeq += 1;
+        const file = `/tmp/frame_src_${evalSeq}.js`;
+        writeFileSync(file, String(src));
+        return origEval(String(src) + "\n//# sourceURL=" + file, ...rest);
+      }
       if (err) throw new Error(err);
       return out;
     };
@@ -316,7 +356,16 @@ shared.top = page.g;
 // (`function(w){return eval(w)}`) changes what the eval'd handler can resolve - the very first
 // program handler then throws `fC is not defined`, which the pristine run does not. Any text
 // patch of an eval site is therefore a behavioural change, not an observation.
-const interpSrc = TRACE ? interp.replace("P=0,X=null,A=[],L.f=", "P=0,X=null,A=(globalThis.__A=[]),L.f=") : interp;
+let interpSrc = TRACE ? interp.replace("P=0,X=null,A=[],L.f=", "P=0,X=null,A=(globalThis.__A=[]),L.f=") : interp;
+if (args.includes("--capture-src") && interpSrc.includes("b=A.eval(")) {
+  // Capture the text the VM evaluates in the frame realm. WARNING, measured: this call-through is
+  // NOT neutral - the program then throws `Eb is not a function` / `fC is not defined` and runs a
+  // different instruction count, because `A.eval` is the interpreter's own scope-bound eval. Use it
+  // to read the generated text, never to measure behaviour. (The frame copy is a variant of the page
+  // text, not a copy: patches propagate, lengths vary per run, columns are stable.)
+  interpSrc = interpSrc.replace("b=A.eval(",
+    "b=(function(__s){try{__capture(__s)}catch(__e){}return A.eval(__s)})(");
+}
 if (TRACE && interpSrc === interp) console.log("[dbg] WARN: boot array anchor not found");
 runInContext(interpSrc, page.ctx, { filename: "interp.js" });
 const VM = page.g.ridgeslice;
@@ -344,6 +393,13 @@ try {
     writeFileSync(opt("out", "/tmp/node-token.bin"), Buffer.from(raw + pad, "base64"));
   }
   out.head = token.slice(0, 48);
+  if (TRACE) {
+    out.src_count = CAPTURED.length;
+    CAPTURED.forEach((src, i) => {
+      const pad = src.length - src.replace(/^\n+/, "").length;
+      writeFileSync(`/tmp/frame_src_${i}_pad${pad}.js`, src);
+    });
+  }
   out.frames = shared.frames.length;
   {
     const f = shared.frames[0];

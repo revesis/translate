@@ -44,17 +44,23 @@ is spent *as jsdom*; the same question in a `node:vm` realm is the live line - s
   record. Section 2b's "three identical 542-byte blocks" are three recorded exceptions.
 
 **What is open.** The program advances two instructions in Node and then throws
-(`Cannot read properties of null (reading 'String')` in handler `GK`, called with `u === undefined`;
-downstream `L.ue` is not a function). Chrome does not throw there. Fix that and the token should drop
-into the trusted size range; only then is a live request worth spending.
+(`Cannot read properties of null (reading 'String')` at column 32012 of the generated frame source,
+handler `GK`; downstream `V.apply` at 30177). Chrome does not throw there. Section 62 records the two
+traps that now bound this: the frame copy is *generated* from the page text (so patches propagate and
+columns are stable), and the frame's `eval` is the interpreter's own scope-bound eval, so neither it nor
+its call site may be wrapped - a call-through alone changes the program's behaviour. Node's inspector
+does not pause on caught exceptions in a `vm` context (measured), so the throw has to be reached another
+way.
 
 **Next step, in order.**
 
-1. Log the field table (`vm.u`) and the two `fC(6,z,2x,0,n)` writes at the moment `GK` is entered, in
-   Node; compare with the same point in `research/probe_realm.py` (Chrome, same material, hooks are
-   invisible to the VM). The question is a value, not a mechanism.
-2. If the value comes from the element/`document.body` surface, extend the shim only along section 57's
-   read list - nothing else is reachable.
+1. `Debugger.setBreakpointOnFunctionCall` on the frame realm's `eval` object (breakpoints are invisible
+   to the VM, section 5): read the generated source out of the call frame without touching the call, and
+   read the handler's locals at 32012. That is the one instrument left that neither rewrites the eval
+   nor depends on exception pauses.
+2. If that is blocked too, drop to the bytecode line: `research/disasm.py` / `read_records.py` against
+   the program for the two instructions that run before the throw, and name the field `GK` reads as
+   null.
 3. When the token lands at ~1075 B, mint twice in one process and check that only the nonce/byte-4
    differ (section 58's invariant), then spend one live request (`research/live_test.py`) with a
    Node-minted token in a Chrome-minted envelope.

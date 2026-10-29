@@ -3014,3 +3014,63 @@ in order of cheapness to test in `research/node_mint.mjs`: the field-seeding ord
 the element surface the program touches (section 57's list is the complete read surface, so any missing
 member is enumerable). `research/probe_realm.py` gives the same-build Chrome control for every step:
 boot profile, concat/field profile, pre-encode token bytes and the eval'd script list.
+
+## 62. The frame copy is generated, its eval is scope-bound, and where the program throws
+
+Four things measured on the Node line after section 61, all of them about *how to observe* as much as
+about what is there.
+
+**The frame copy is assembled per run from the page's interpreter text.** The VM does not eval the text
+it was handed: it builds a variant (62 016-62 080 chars of code plus 400-7 800 random newlines, so the
+same stack position reports a different *line* every run but the same *column*). Text patches to the
+page copy **do** reach it - an `ERRSTACK` log inserted in the page text shows up inside the captured
+frame source - which is why the emit hook of section 59 works from the page copy. This corrects the
+earlier reading of section 24: the signing instance's text is generated, not pristine, and it inherits
+what the page copy says.
+
+**`A.eval(...)` cannot be routed through another frame.** The boot eval is `b=A.eval(Z(...)(...))`. Even
+a semantics-preserving call-through - `b=(function(s){capture(s);return A.eval(s)})(SRC)` - changes the
+program: it then throws `Eb is not a function`, then `fC is not defined`, and runs a different number of
+instructions. So the callee is the interpreter's *own* eval, bound to its scope chain (that is how the
+eval'd program handlers resolve `fC`, `q`, `E`, `Yr`), and every observation must stay off that call
+path. The same trap as section 60, one level deeper: not just `window.eval`, the call site too.
+
+**Where the program throws (stable columns, three TypeErrors).**
+
+```
+col 32012  Cannot read properties of null (reading 'String')
+col 32012  Cannot read properties of undefined (reading 'replace')
+col 30177  V.apply is not a function
+chain: Yq(23808) -> sn(39477) -> d.eval as R(58964) -> a5(26194) -> Jx(8707) -> HD(10398) -> Timeout
+```
+
+The handler at 32012, as it reads in the frame copy:
+
+```js
+function(z,g,V,L,Y,w){
+  YU(z,(L=(g=C(z,(w=F(z,(V=F((Y=W(14,z),z),5),12)),V)),Z(h,Y))==g,w),+L)
+}
+```
+
+`C`/`Z` are field readers (`J.u[k]`, throwing `[FK,30,k]` when the slot is missing), `W` is the slot
+accessor factory, `F` is the dispatcher, `YU` a field writer. Nothing in the frame copy reads a property
+literally named `String` (grep: 0 hits for `.String`), so the name comes from a computed key - i.e. from
+the interpreter's own "manufacture a string out of an error message" machinery (`null.x`,
+`new Array(-1)`, `(1).toString(0)` are eval'd for exactly that, section 60). The read lands on `null`
+because the frame copy's init left something unset, and the two TypeErrors at the same column are the
+same expression failing on two different values.
+
+**Two environment facts that are real but not the trigger.** The frame URL is an empty document
+(`/_/TranslateWebserverUi/bscframe` -> 15 B, `<!DOCTYPE html>`), so there is nothing to load that the
+shim is missing; but its CSP is `script-src 'unsafe-eval'; require-trusted-types-for 'script'`, so in
+Chrome every eval inside the frame must go through a Trusted Types policy. Adding a fake policy, plus
+`requestIdleCallback`, plus the Window surface a bare realm lacks (`length`, `frameElement`, storages,
+`crypto`, `customElements`, `document.URL/scripts/all`), leaves the token at 2893 chars - measured, four
+variants. Not the trigger.
+
+**Node's inspector cannot trace this throw.** `Debugger.setPauseOnExceptions('caught')` and `('all')`
+both produce exactly one pause (`Break on start`, no frames) - before and after
+`runIfWaitingForDebugger` - even for a plain `try{vm.runInContext('null["String"]')}catch{}`. So
+`research/node_inspect.py` can list scripts but cannot hand out the throw site; the remaining routes are
+`Debugger.setBreakpointOnFunctionCall` on the frame's eval object, or the bytecode tools
+(`disasm.py` / `read_records.py`) against the program itself.
