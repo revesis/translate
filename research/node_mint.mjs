@@ -29,6 +29,7 @@ const EVAL_LOG = args.includes("--eval-log");
 const materialPath = opt("material", "/tmp/bgbuild/material.json");
 const FRAME_DELAY = Number(opt("frame-delay", "1"));
 const ENV = (opt("env", "") || "").split(",").filter(Boolean);
+const TIME_SCALE = Number(opt("time-scale", "1")) || 1;
 const freqPath = opt("freq", new URL("./freq.txt", import.meta.url).pathname);
 
 const material = JSON.parse(readFileSync(materialPath, "utf8"));
@@ -185,9 +186,12 @@ function makeRealm(label, shared) {
   realm.location = location;
 
   const performance = {
+    // The VM gates work on elapsed time (`if(U-S.A5 < S.YB-G) bail`), so a realm that is much faster
+    // than a browser can fail a timing gate rather than a semantic one. --time-scale makes the clock
+    // run faster without making the code slower.
     now: ENV.includes("perf0") ? () => 0 : () => {
       const t = Number(process.hrtime.bigint() / 1000n) / 1000;
-      return t;
+      return t * TIME_SCALE;
     },
     timeOrigin: Date.now(),
     timing: { navigationStart: Date.now() - 500 },

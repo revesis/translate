@@ -3074,3 +3074,25 @@ both produce exactly one pause (`Break on start`, no frames) - before and after
 `research/node_inspect.py` can list scripts but cannot hand out the throw site; the remaining routes are
 `Debugger.setBreakpointOnFunctionCall` on the frame's eval object, or the bytecode tools
 (`disasm.py` / `read_records.py`) against the program itself.
+
+## 63. Two more negatives, and the number that has to move
+
+Instrumenting the two field readers (`C`, `Z`) to log a null container and a missing slot - both are
+plain function-body patches, so they propagate into the frame copy - gives **0 hits** on a run that
+still throws all three TypeErrors. So the null is *not* a field-table miss: no slot is missing, no
+container is null, and the failing read is a computed member access (`X[name]`) on a null object
+somewhere else. That removes the whole "the program asks for a field that was never seeded" family of
+explanations.
+
+Making the clock run faster (`performance.now() x10, x100`, i.e. the same code, more elapsed time)
+changes nothing either: 2893 chars in all three runs. The dispatcher does contain a timing gate
+(`if(U-S.A5 < S.YB-G) bail`), so the program *can* bail on being too fast, but that gate is not what
+stops this run through the clock the realm controls.
+
+**The number to move.** One mint in Chrome's frame realm evaluates ~245 program-computed handler
+snippets (`Debugger.scriptParsed`, section 60). The same mint in Node evaluates **3**. Any fix -
+realm surface, timing, `document.body`, eval plumbing - has to move that count, because the token's
+length is downstream of how far the program's instruction stream gets. Watch it with
+`node research/node_mint.mjs --trace --eval-log` (the eval hook perturbs, so use it as a relative
+counter only) or by counting `Debugger.scriptParsed` entries in the Chrome control
+(`research/probe_realm.py`).
