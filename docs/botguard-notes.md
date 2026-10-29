@@ -2483,3 +2483,39 @@ record table are specified; what is not yet done is proving where the *source fi
 chunks (the marker, the 64-byte block, the two 4-byte words) get their values - that is the body of a
 reimplementation, and unlike these 5 bytes it is measurable with the tools that already work
 (`record_map.py` joins a field to the op that wrote it).
+
+## 47. The head's source fields are filled by a tiny writer family: `write(width, 0, value, N)`
+
+Section 39 mapped the head chunks to emit instructions `[op, sourceField, tokenField]`. The missing
+half was who fills those source fields. Tool: `research/head_map.py` (per head chunk: emit op, source
+field, and the op that wrote that field with its handler text). One Fhxs run:
+
+```
+  #  bytes  emit-op  src  who wrote src        handler
+  1     1      163  113  op 20  x66     function(){R(30,0,u,1)}
+  2     2      490    6  op 425 x3      function(y,p,X,C,H,U){while(11)if(G6/=G6 ...   <- the marker
+  3     6      490    6  op 425 x3
+  4     1      163   66  op 20  x2      function(){R(30,0,u,1)}
+  5     4      460   28  op 308 x2      function(){R(31,0,V,4)}
+  6     4      460   60  op 308 x6      function(){R(31,0,V,4)}
+  7     1      163   62  op 20  x2      function(){R(30,0,u,1)}
+  8     2      490   57  op 425 x67     ...
+  9    64      490   57  op 425 x67
+```
+
+and the same shape on EON (`op 72  function(){K(0,40,c,1)}`, `op 87  function(){K(0,42,D,4)}`) and pBm
+(`op 21  function(){st(0,(zQ>>=66,1),8,c,6)}`, `op 106 function(D){lf=(st(0,4,8,D,7),qs>>211)}`).
+
+Reading: the head's values are produced by a **writer family of one shape**, `write(tag, 0, value, N)`
+- `N` is the width (1 or 4 in the examples), the third argument is the value, and the whole handler is
+one call. The marker (6 bytes) and the 64-byte block come from a longer handler (op 425 in Fhxs,
+133 in EON, 337 in pBm) that produces a byte string rather than a word.
+
+So the head is fully accounted for mechanically: `write` ops fill fields -> `163/460/490` emit them
+into the token field. What a reimplementation still has to reproduce is the *values* those writers are
+handed (the two 4-byte words and the 64-byte block), not the plumbing - and the words are exactly the
+kind of thing section 43 showed to be RNG or counters, which is the next thing to check per field.
+
+Caveat: the last row of a run is sometimes an untagged emit (`ax(146, Q9(1, this[zF].length), this)` in
+Fhxs) whose source field has no logged writer, so it shows `-`. That is the counter byte, not a
+missing record.
