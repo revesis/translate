@@ -58,8 +58,8 @@ JS = r"""(async () => {
 })()"""
 
 
-async def run(port: int, out: str) -> None:
-    freq_path = os.path.join(HERE, "freq.txt")
+async def run(port: int, out: str, freq_file: str | None = None) -> None:
+    freq_path = freq_file or os.path.join(HERE, "freq.txt")
     freq = open(freq_path).read() if os.path.exists(freq_path) else "hello"
     cs = dp.CS(dp.CHROME, port, DEFAULT_UA, "/tmp/bg-one-%d" % port)
     await cs.start()
@@ -105,8 +105,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=10290)
     ap.add_argument("--out", default="/tmp/bg-one")
+    ap.add_argument("--freq", help="file holding the content-binding string (default research/freq.txt)")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out))
+    asyncio.run(run(a.port, a.out, a.freq))
 
 
 if __name__ == "__main__":

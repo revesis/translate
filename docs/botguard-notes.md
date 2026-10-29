@@ -2624,3 +2624,43 @@ problem, not an instrumentation one.
 Until then, the honest summary is: the token's stable content is per-load environment data plus a
 per-build tag; the per-mint tail is randomness; no content binding was found in any part a synthetic
 request exercises.
+
+## 51. Same build, two payloads: the mint does not encode the content
+
+Section 50 diffed token bytes and found nothing content-sensitive; the weakness was that the two mints
+were of the same *shape*, so a size effect could have been hidden. Tool: `research/probe_payload.py` -
+one load, one patched instance, mint with payload A, then with payload B (A = `freq.txt`, B = A plus
+one form field), and compare the **mint-phase** emissions. The head chunks are emitted while the API is
+being built (`VM.a`), so the baseline is taken after setup; only what the mint itself emits is compared.
+
+```
+build SnVlM0KMiNaWq5YD   freq A 2075 chars  freq B 2080 chars
+  A: token 904 chars  emissions 5   fields [307, 483]
+  B: token 904 chars  emissions 5   fields [307, 483]
+  same emission shape: True
+
+build X9X8Htl1zljiC_ED
+  A: token 1028 chars  emissions 5  fields [154, 478]
+  B: token 1028 chars  emissions 5  fields [154, 478]
+  same emission shape: True
+```
+
+Two builds, same result: the mint emits the same fields with the same lengths and the same tags, and
+the token has the same length, for two different payloads. Together with section 50 (no byte of the
+stable region reacts to the content) that settles the client side:
+
+* the token is **not** a function of the `f.req` body - not as a hash, not as a length, not as a
+  field that switches on;
+* so the "a token minted for one payload is not accepted for another" observation of section 1 is
+  enforced on the **server** against the envelope (`f.sid`, `bl`, `_reqid`, the attested headers) or by
+  comparing the token's freshness against the request, not by a digest inside the token.
+
+Consequence for a reimplementation: the token's per-load constants are environment data, the per-mint
+bytes are randomness, and the payload does not have to be reproduced in the token at all. That removes
+the largest imagined obstacle (hashing the body) from the offline-mint problem - what remains there is
+the trust gate of section 1, which is a different question.
+
+A caveat worth keeping: all of this is measured with `freq` as the only varied input. If a future
+capture shows the token changing with the *image* but not with a JSON string of the same size, the
+difference would have to come from a field that reads the payload's bytes rather than its length -
+nothing in the emission log suggests one exists, but it has not been excluded for every build.
