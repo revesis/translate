@@ -2664,3 +2664,32 @@ A caveat worth keeping: all of this is measured with `freq` as the only varied i
 capture shows the token changing with the *image* but not with a JSON string of the same size, the
 difference would have to come from a field that reads the payload's bytes rather than its length -
 nothing in the emission log suggests one exists, but it has not been excluded for every build.
+
+## 52. The spec is executable: the assembler reproduces five tokens byte for byte
+
+`docs/token-format.md` describes the layout; `research/assemble_token.py` implements it. Round-trip mode
+takes one run's emissions as pieces, rebuilds the token **from the layout** (not from the token), and
+compares:
+
+```
+pBm  366  13 emissions  tagged [(117,1),(99,11),(23,665)]   assembled 771 vs 771  identical=True
+EON  299  ...                                                764 vs 764  identical=True
+Fhxs 146  ...                                                729 vs 729  identical=True
+X9X8 478  ...                                                799 vs 799  identical=True
+U5tY 134  ...                                                835 vs 835  identical=True
+```
+
+Five families, byte-identical. Two things this pinned down that the prose model had wrong:
+
+* **untagged chunks are interleaved with the tagged records.** The `07` byte (the `zF` counter) comes
+  *after* the tag-117 record, not before the first tag, so the stream cannot be split into "head" and
+  "records" - it is one ordered list of `(tag?, payload)`. The first assembler version dropped that byte
+  and was off by exactly one at offset 92 on every build.
+* **the head is not a separate phase in the byte stream**: `nonce(2) + [b8, nonce[1], byte4]` is the
+  only prefix; everything after it is the emission stream in order.
+
+`--fresh` is the offline-minter prototype: keep the per-load constants, generate a new nonce, regenerate
+the bulk, and emit a token of the same length with the marker intact. What it does **not** answer is
+whether Google accepts it - that is section 1's trust gate, and testing it needs a live request with a
+full envelope (cookies, `f.sid`, `bl`, attested headers), i.e. a decision about sending a synthetic
+token to the service rather than another read-only measurement.
