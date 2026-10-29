@@ -2374,3 +2374,30 @@ Reproduce:
 ```
 python3 research/probe_rng.py --port 10530 --out /tmp/bg-rng
 ```
+
+## 44. The five unexplained bytes: what they are not, and the instrument that is left
+
+Section 43 pinned the filler function and left the last five bytes of the tag-99 record unexplained
+(`11 f0 21 76 c5` in one run). Four exclusions, all measured, so nobody spends a round on them again:
+
+| candidate | test | result |
+| --- | --- | --- |
+| the filler RNG | `Math.random()*255\|0` -> 170 | first 4 bytes become `aa`, the last 5 stay random |
+| any `Math.random()` | all 6-7 sites -> `0.5` (two runs) | last 5 still differ (`47 0b 7a eb 98` vs `74 68 02 e1 3a`) |
+| `+new Date` | all 6 sites -> constant, with the RNG pinned (two runs) | last 5 still differ (`41 1e a4 ff 42` vs `24 98 f6 9f 33`) |
+| an emitter call | full emission logs of four families | **no 5-byte emission into that field exists in any run** - its only emission is the tag-98 `00 02 xx yy` |
+
+So the bytes are not from `Math.random`, not from a wall-clock read, and not produced by `ax`/`qj` at
+all. Since the field demonstrably holds them (the tag-99 copy is `len16 + field`, and the length is
+9), they must arrive by **direct index assignment** (`field[i] = v`), which is invisible to both the
+emit hook and the push/concat hook - section 37 already saw that shape in the writers
+(`L[G++] = e`), and the interpreter contains the same pattern on fields (`w(this,117)[0] = c.shift()`).
+
+The instrument that would catch it: a `Proxy` over the field buffer, or `Object.defineProperty` on the
+indices the copy will read, installed from the accessor patch (the accessor is already located for the
+field-read hook). It has to be a Proxy over the *array*, not a hook on `Array.prototype`, and the
+accessor returns `create()` or `prototype` depending on the slot state, so both branches need covering.
+
+Trap worth recording: pinning `performance.now()` to 0 (together with the date pins) does not merely
+leave the bytes random - the whole mint degrades to a 33-character token, i.e. an error answer. The
+timing source cannot be neutralised that way, so it is not a usable discriminator.

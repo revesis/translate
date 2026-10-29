@@ -32,9 +32,13 @@ from run_one import JS  # noqa: E402
 from record_map import records, token_field  # noqa: E402
 
 FILLER = "170"
+# `Math.random()` appears 7 times (255 filler, 1E9 id, this.n, the 7824-newline padding), and
+# `+new Date` 6 times; pinning one at a time is how the tag-99 tail gets attributed
+RANDOM_PIN = "0.5"
+DATE_PIN = "1700000000000"
 
 
-async def run(port: int, out: str) -> None:
+async def run(port: int, out: str, mode: str = "filler") -> None:
     freq = open(os.path.join(HERE, "freq.txt")).read() if os.path.exists(
         os.path.join(HERE, "freq.txt")) else "hello"
     cs = dp.CS(dp.CHROME, port, DEFAULT_UA, "/tmp/bg-rng-%d" % port)
@@ -49,8 +53,20 @@ async def run(port: int, out: str) -> None:
         arr = json.loads("[" + dp.parse_material(html)[4:])
         plain = arr[5][-1]
         tag = str(arr[2])[:16]
-        pinned, n = re.subn(r"Math\.random\(\)\*255\|0", FILLER, plain)
-        print("build", tag, "random sites pinned:", n)
+        pinned, n255 = re.subn(r"Math\.random\(\)\*255\|0", FILLER, plain)
+        nrand = ndate = 0
+        if mode in ("random", "both"):
+            pinned, nrand = re.subn(r"Math\.random\(\)", RANDOM_PIN, pinned)
+        if mode in ("date", "both", "all"):
+            pinned, ndate = re.subn(r"\+new Date", DATE_PIN, pinned)
+        nperf = 0
+        if mode == "all":
+            # the remaining time sources: bare `new Date`, `performance.now()`
+            pinned, nperf = re.subn(r"performance\.now\(\)", "0", pinned)
+            pinned, ndate2 = re.subn(r"new Date(?!\))", "(" + DATE_PIN + ")", pinned)
+            ndate += ndate2
+        print("build", tag, f"pinned: filler={n255} random={nrand} date={ndate} perf={nperf}")
+
         try:
             src, info = bgpatch.patch(pinned, blockcache=False, writes=True, loop=True,
                                       handlers=True, fieldread=True, emit=True)
@@ -78,7 +94,8 @@ async def run(port: int, out: str) -> None:
         for e in d.get("em") or []:
             if len(e) > 6 and e[6] in (23, 99, 117):
                 p = base64.b64decode(e[5]) if e[5] else b""
-                print(f"  emit tag {e[6]} len {e[1]} head {p[:14].hex(' ')}")
+                tail = p[-8:].hex(" ") if p else ""
+                print(f"  emit tag {e[6]} len {e[1]} head {p[:14].hex(' ')} tail {tail}")
     finally:
         await cs.stop()
 
@@ -87,8 +104,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=10530)
     ap.add_argument("--out", default="/tmp/bg-rng")
+    ap.add_argument("--mode", choices=("filler", "random", "date", "both", "all"), default="filler")
     a = ap.parse_args()
-    asyncio.run(run(a.port, a.out))
+    asyncio.run(run(a.port, a.out, a.mode))
 
 
 if __name__ == "__main__":
