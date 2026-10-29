@@ -115,7 +115,7 @@ def find_name(s: str, upto: int, vm: str):
     return best[0], best[1], best[2], brace_end(s, best[2])
 
 
-def patch_emit(src, info_emit):
+def patch_emit(src, info_emit, ixproxy=False):
     """Hook the byte emitters; usable on its own (a load whose reader anchors do not match)."""
     # The byte emitters are the only functions that XOR the per-field keystream while appending
     # (`e.push(e.Tu[i&7]^byte)`), and they come in two argument orders:
@@ -169,6 +169,7 @@ def patch_emit(src, info_emit):
     cands_a = list(re.finditer(r"(\w+)=function\(([^)]*)\)\{(?:if|while)\(\w+\.C==\w+\)", src))
     a_heads = {m.start() for m in cands_a}
 
+    acc_names = set()
     shape_b, seen_b = [], set()
     for mloop in re.finditer(r"(\w+)\((\w+)\[\w+\]\)", src):
         pushvar, data_arg = mloop.group(1), mloop.group(2)
@@ -201,6 +202,7 @@ def patch_emit(src, info_emit):
         if not (mvm and macc):
             continue
         vm_arg = mvm.group(1)
+        acc_names.add(macc.group(1))
         a1, a2 = macc.group(2), macc.group(3)
         fid_arg = a2 if a1 == vm_arg else (a1 if a2 == vm_arg else None)
         if not fid_arg:
@@ -223,6 +225,7 @@ def patch_emit(src, info_emit):
         body = src[m.end():m.end() + 140]
         macc = re.search(r"(?:w|z)\((\w+),(\w+)\)", body)
         if macc:
+            acc_names.add(macc.group(0).split("(")[0])
             a1, a2 = macc.group(1), macc.group(2)
             fid_arg = a2 if a1 == vm_arg else a1
         else:
@@ -252,12 +255,58 @@ def patch_emit(src, info_emit):
         info_emit["sites"].append({"fn": m.group(1), "shape": "guard", "params": ps[:4],
                                    "vm": vm_arg, "field": fid_arg, "data": data_arg,
                                    "flag": flag_arg})
+
+    if ixproxy:
+        # Some bytes reach a field by direct index assignment (`field[i] = v`), which neither the
+        # emit hook nor an Array.prototype hook can see (section 44). Wrap every field accessor's
+        # return value in a Proxy that logs index writes; the proxy is cached per target so the
+        # VM's own identity comparisons keep working.
+        src += ("\nfunction __ix(id,a){try{if(a&&typeof a==='object'){var m=window.__pm||"
+                "(window.__pm=new WeakMap()),p=m.get(a);if(p)return p;"
+                "p=new Proxy(a,{set:function(t,k,v){try{if(typeof k==='string'&&k>='0'&&k<='9')"
+                "{(window.__ixlog=window.__ixlog||[]).push([id,+k,v])}}catch(e){}t[k]=v;return true}});"
+                "m.set(a,p);return p}}catch(e){}return a}\n")
+        edits = []
+        # the accessor's table name rotates (`vm.h`, `vm.G`, `vm.l`), so only the names the
+        # emitters actually call are wrapped, and the id is the index argument of `vm.table[id]`
+        cands = (list(re.finditer(r"(?<![\w.$])" + re.escape(n) + r"=function\(", src))
+                 for n in sorted(acc_names))
+        for m in [x for group in cands for x in group]:
+            seg = src[m.end():m.end() + 500]
+            mid = re.search(r"\w+\.\w+\[(\w+)\]", seg)
+            if not mid:
+                continue
+            # wrap *every* return: the accessor hands back `create()` on one branch and
+            # `.prototype` on the other, and which one is live depends on the slot's state
+            # (`if(L.value)return L.create(); return ...prototype`). A non-object return is a
+            # no-op in __ix, so wrapping both is safe.
+            rets = [x for x in re.finditer(r"return\s*([^;{}]{1,240})[;}]", seg)
+                    if not re.search(r"=function\(", seg[:x.start()])]
+            if not rets:
+                continue
+            for mr in rets:
+                span = (m.end() + mr.start(1), m.end() + mr.end(1))
+                if any(not (span[1] <= a or span[0] >= b) for a, b, _ in edits):
+                    continue
+                edits.append((span[0], span[1], mid.group(1)))
+            continue
+        # apply back to front so every offset still refers to the original text (a forward pass
+        # re-wraps the same return, which produced `__ix(F,(__ix(F,(...))))` on the first attempt).
+        # The sort is explicit: edits are collected per accessor name, so their order is not the
+        # text order, and `reversed` alone corrupts the text (`br__ix(R,(eak}`).
+        # The leading space matters: `return(expr)` has no space before the expression, and
+        # `return__ix(...)` parses as a call to an identifier called `return__ix` - valid syntax,
+        # silently no return, and the VM then reads `undefined`.
+        for at, end, idv in sorted(edits, key=lambda e: -e[0]):
+            src = src[:at] + " __ix(" + idv + ",(" + src[at:end] + "))" + src[end:]
+        hits = len(edits)
+        info_emit["ixproxy_sites"] = hits
     return src
 
 
 def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=False,
           writes=False, killswitch=False, sink=None, canary=False, post=False, kinds=False,
-          loop=False, handlers=False, fieldread=False, emit=False):
+          loop=False, handlers=False, fieldread=False, emit=False, ixproxy=False):
     """Instrument the interpreter. `sink` is the JS expression used for state ("window" by
     default, or "(window.top||window)" when the VM runs in a frame that may be removed
     before the caller can look at it)."""
@@ -267,7 +316,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     if emit and not any((entry, ret, boot, sweep, blockcache, writes, killswitch, canary, post,
                          kinds, loop, handlers, fieldread)):
         info = {"sites": []}
-        src = patch_emit(src, info)
+        src = patch_emit(src, info, ixproxy=ixproxy)
         if "window.__MINE=1;" not in src:
             src = src + "window.__MINE=1;"
         return src, info

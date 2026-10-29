@@ -2406,3 +2406,38 @@ timing source cannot be neutralised that way, so it is not a usable discriminato
 
 One-page distillation of sections 1 and 36-44 (shape, op table, tag table, what is random, what is
 still open): `docs/token-format.md`. Read that first; this file is the evidence.
+
+## 45. The Proxy over the field accessor sees nothing: the exposed object is not the storage
+
+Section 44 named a `Proxy` over the field buffer as the instrument for the last five bytes. It is
+implemented (`bgpatch.patch(..., ixproxy=True)`, `run_one.py --ixproxy`) and it **does not work**, for
+a reason worth recording.
+
+What it does: every accessor the emitters call (`vm.h[id]` on Fhxs, `vm.G[id]` on EON, `vm.l[id]` on
+pBm - the table name rotates) gets *every* `return` wrapped in `__ix(id, value)`, which returns a
+cached `Proxy` (WeakMap per target, so identity comparisons keep working) whose `set` trap logs
+`[fieldId, index, value]` to `window.__ixlog`. Verified offline on four families: 2-5 returns
+wrapped, `node --check` clean, and the `return(expr)` -> `return __ix(...)` rewrite needs an explicit
+space (`return__ix(...)` parses as a call to an identifier called `return__ix`, is valid JavaScript,
+and silently returns `undefined`).
+
+Measured live: 25 emissions and a normal-length token, **`__ixlog` empty**. So no index assignment
+ever happens on the object the accessor returns. That is consistent with section 2's anatomy of a
+slot - "an object dressed up as a function" whose `create`/`concat`/`push` are its own methods - i.e.
+the bytes are appended to an array the object closes over, not to the object itself. Wrapping the
+object's indices can never see them.
+
+The instrument that is left, therefore, is not a Proxy over the object but a wrapper around **the
+slot's own methods**: replace `a.push` / `a.concat` on the returned object with loggers that record
+`(fieldId, method, arguments, length before/after)`. `probe_concat.py` already showed the shape works
+(it hooked `Array.prototype` and saw 966 pushes into the token field, `n = 88..1053` with no gaps);
+the missing piece is doing it per *slot object* so the field id is known, and checking the tag-99
+source field specifically rather than the token field.
+
+Two things this round did establish, independent of the five bytes:
+
+* the accessor returns `create()` on one branch and `prototype` on the other (`if(L.value)return
+  L.create(); return ...prototype`), so any instrument that only wraps one branch measures half the
+  traffic - the same class of mistake as the emit hook logging `data` but not the flag byte;
+* `--ixproxy` costs nothing when off, and with it on the token and the emission log are unchanged
+  (25 emissions, trusted length), so the wrapping itself is inert rather than harmful.
