@@ -85,6 +85,7 @@ function makeStyle() {
     getAttribute: () => null, setAttribute: () => {}, removeAttribute: () => {},
   };
   Object.defineProperty(style, "constructor", { value: function CSSStyleDeclaration() {} });
+  Object.defineProperty(style, Symbol.toStringTag, { value: "CSSStyleDeclaration", configurable: true });
   return style;
 }
 
@@ -143,6 +144,16 @@ function makeElement(realm, tag) {
   };
   // An iframe is the one element whose behaviour the VM measures: `src` assignment is
   // what starts the frame, and `load` / `error` are what it waits for.
+  if (ENV.includes("tags")) {
+    const cls = {
+      div: "HTMLDivElement", img: "HTMLImageElement", iframe: "HTMLIFrameElement",
+      html: "HTMLHtmlElement", head: "HTMLHeadElement", body: "HTMLBodyElement",
+      script: "HTMLScriptElement", span: "HTMLSpanElement", a: "HTMLAnchorElement",
+      canvas: "HTMLCanvasElement", input: "HTMLInputElement", shadow: "ShadowRoot",
+    }[String(tag).toLowerCase()] || "HTMLElement";
+    Object.defineProperty(el, Symbol.toStringTag, { value: cls, configurable: true });
+    Object.defineProperty(el, "constructor", { value: { [cls]: function () {} }[cls], configurable: true });
+  }
   if (String(tag).toLowerCase() === "img") {
     el.complete = true;
     el.naturalWidth = 0;
@@ -164,6 +175,22 @@ function makeElement(realm, tag) {
     });
     Object.defineProperty(el, "contentWindow", { get: () => frameWin, set: (w) => { frameWin = w; } });
     Object.defineProperty(el, "contentDocument", { get: () => (frameWin ? frameWin.document : null) });
+  }
+  if (ENV.includes("proxy")) {
+    // Observation only: a Proxy on the two objects the VM actually touches (an element and its style)
+    // records every property the program reads. The token length tells us whether the VM noticed.
+    return new Proxy(el, {
+      get(t, k, r) {
+        if (typeof k === "string" && k !== "then") {
+          (realm.g.__gets = realm.g.__gets || []).push([String(tag), k, typeof t[k]]);
+        }
+        return Reflect.get(t, k, r);
+      },
+      has(t, k) {
+        (realm.g.__gets = realm.g.__gets || []).push([String(tag), "in:" + String(k), k in t]);
+        return Reflect.has(t, k);
+      },
+    });
   }
   if (ENV.includes("webidl")) {
     for (const m of ["appendChild", "removeChild", "insertBefore", "addEventListener",
@@ -239,6 +266,10 @@ function makeRealm(label, shared) {
     doc.querySelectorAll = webidl(isDoc, doc.querySelectorAll);
     doc.addEventListener = webidl(isDoc, doc.addEventListener);
     doc.removeEventListener = webidl(isDoc, doc.removeEventListener);
+  }
+  if (ENV.includes("tags")) {
+    Object.defineProperty(doc, Symbol.toStringTag, { value: "HTMLDocument", configurable: true });
+    Object.defineProperty(g, Symbol.toStringTag, { value: "Window", configurable: true });
   }
   realm.document = doc;
   realm.document.defaultView = g;
@@ -482,6 +513,28 @@ try {
       const pad = src.length - src.replace(/^\n+/, "").length;
       writeFileSync(`/tmp/frame_src_${i}_pad${pad}.js`, src);
     });
+  }
+  {
+    // Z() writes (research patch): Z is overloaded - 2 args read a slot, 3+ args write one.
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__zw;
+      if (Array.isArray(arr) && arr.length) {
+        out["zw_" + n] = arr.length;
+        writeFileSync(`/tmp/zw_${n}.json`, JSON.stringify(arr));
+      }
+    }
+  }
+  {
+    // Property reads on the elements the VM touches (research patch: Proxy in makeElement).
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__gets;
+      if (Array.isArray(arr) && arr.length) {
+        out["gets_" + n] = arr.length;
+        writeFileSync(`/tmp/gets_${n}.json`, JSON.stringify(arr));
+      }
+    }
   }
   {
     // Field-write trace (research patch inside E/q): who writes what kind of value where.

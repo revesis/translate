@@ -3415,3 +3415,51 @@ Also negative: enriching `style` (CSSStyleDeclaration-shaped: `cssText`, `length
 `getPropertyValue`, `setProperty`, `removeProperty`, a `constructor` name) and `img`
 (`complete`/`naturalWidth`/`naturalHeight`/`decode`) changes nothing - 2893 chars either way. Those
 two probes are satisfied by any object.
+
+## 76. d8: the browser's own V8 without the browser - and it fails exactly like Node
+
+Ninja target `d8` builds in **10 steps** from the same checkout as the browser binary (`[10/10] LINK ./d8`,
+a few minutes on 4 cores) and reports `V8 version 15.9.40`, i.e. the engine inside Chromium 159. It
+also carries our C++ instrumentation: `[ERRLOG]`/`[EVALLOG]`/`[EVALSRC]` all fire in d8.
+
+The port (`research/d8_mint.js`) uses real V8 realms instead of `node:vm`:
+
+```
+Realm.createAllowCrossRealmAccess()   one realm per window, cross-realm because the VM reaches its
+                                      frame through `iframe.contentWindow` (a same-origin blank frame)
+Realm.global(r)                       the realm's global object, to hang the DOM shim on
+Realm.eval(r, interp)                 the interpreter, evaluated inside that realm
+%PerformMicrotaskCheckpoint()         d8 has no event loop: drain microtasks by hand (needs
+                                      --allow-natives-syntax; %RunMicrotasks does not exist in 15.9)
+arguments (top level)                 d8 hands script args through the top-level `arguments`,
+                                      not through `scriptArgs`, and they only arrive after `--`
+```
+
+Result: the VM installs, the iframe opens, the string mining runs - and then it fails the *same* way
+Node does:
+
+```
+10  n is not a function
+ 9  V.apply is not a function
+ 1  Cannot read properties of null (reading 'String')
+ 1  Cannot set properties of undefined (setting '')
+ 1  Cannot read properties of undefined (reading 'replace')
+ 1  Cannot read properties of undefined (reading 'removeEventListener')
+```
+
+Compare the trusted browser run (section 71), which contains **no `is not a function` error at all**.
+So the engine-version hypothesis is dead twice over: the same V8, with the same error texts, produces
+the same degraded path outside Blink. What is missing is the **DOM/bindings layer**, not the JS engine:
+in the browser every value the VM probes through `.apply` / `n.call` really is a native function, and
+`fn.apply(foreignReceiver, args)` really throws `Illegal invocation`.
+
+A diagnostic (perturbing, section 65) confirms the frame copy is where it breaks: wrapping the frame
+realm's `eval` - which makes the VM's `A.eval(src)` an indirect eval - makes the mint *complete*
+instead of dying at `n.call is not a function`, producing 2817 chars / 2112 B with the per-build marker
+**not** at offset 5, i.e. the degraded band. The frame copy is the whole interpreter again
+(`\n`xN + `(function(){...}).call(this)`, 66 340 chars, measured), so its initialisation order is what
+our shim disturbs.
+
+Practical value: this is a much better laboratory than Node - same engine as the target, our own
+embedder, working `[ERRLOG]`/`[EVALLOG]`, no browser process, and a 10-step rebuild - which makes the
+"reproduce Blink's binding layer" work measurable instead of speculative.
