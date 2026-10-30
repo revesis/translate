@@ -3863,3 +3863,27 @@ Next: the guard that decides continuation sits in the mining handler itself
 read that call's value and the following `F(z,37)` / `Z(z.T,L)`; whatever makes it take the `53` (stop)
 branch is the answer, and it is a *decision*, not a missing object - the next probe in the browser is the
 number literal `2.32831e-10`, which needs nothing from the host.
+
+## 89. Breakpoints are non-perturbing only if the evaluated expressions are pure
+
+Reading the mining handler's state at every hit (`String(Y)`, `String(L)`, the caller frames) works, and it
+confirms the shape: every hit arrives through the same chain
+
+```
+<anonymous> col 32466   (the mining handler, one call per name)
+Yq          col 23808   (the program's instruction loop)
+sn          col 39417
+```
+
+with `Y = 16`, i.e. the branch that *does* the eval, and `L` the offset just decoded. So the handler is
+never told to stop - it is simply not called again.
+
+**But the same run also proves the trap**: `next_off` was evaluated as `String(F(z,37))`, and `F` is the
+instruction decoder - calling it *advances* the decode state. That run produced 7 hits and a **3075-char**
+token where the clean runs produce 44-64 hits and 1428-1456 chars. So a breakpoint is invisible only while
+the expressions are pure reads: `F`, `Z`, `a`, `n`, `q`, `E` all mutate or re-enter the VM. Read `Y`, `L`,
+`typeof`, and plain properties; never call the interpreter's own helpers to "look ahead".
+
+This is the same lesson as section 65 in another register: the instrument has to be passive. The CDP window
+(section 85) stays valid for the values it already produced, but any follow-up must be built on `Debugger`
+stepping and plain reads only.

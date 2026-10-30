@@ -314,6 +314,16 @@ function makeRealm(label) {
     };
   }
 
+
+  // A browser realm exposes a large DOM constructor surface; see the header of this patch.
+  for (const name of ["Node", "Element", "HTMLElement", "HTMLDivElement", "HTMLSpanElement", "HTMLAnchorElement", "HTMLImageElement", "HTMLIFrameElement", "HTMLScriptElement", "HTMLCanvasElement", "HTMLInputElement", "HTMLBodyElement", "HTMLHtmlElement", "HTMLHeadElement", "HTMLDocument", "Document", "DocumentFragment", "ShadowRoot", "Text", "Comment", "Attr", "CharacterData", "CSSStyleDeclaration", "CSSStyleSheet", "CSS", "CSSRule", "CSSRuleList", "MediaList", "StyleSheetList", "Event", "EventTarget", "CustomEvent", "MouseEvent", "KeyboardEvent", "UIEvent", "FocusEvent", "InputEvent", "MessageEvent", "ErrorEvent", "ProgressEvent", "StorageEvent", "PopStateEvent", "HashChangeEvent", "PageTransitionEvent", "MutationObserver", "IntersectionObserver", "ResizeObserver", "PerformanceObserver", "ReportingObserver", "URL", "URLSearchParams", "Blob", "File", "FileList", "FileReader", "FormData", "Headers", "Request", "Response", "XMLHttpRequest", "WebSocket", "Worker", "SharedWorker", "MessageChannel", "MessagePort", "BroadcastChannel", "Image", "Audio", "Option", "Range", "Selection", "DOMParser", "XMLSerializer", "XPathResult", "XPathEvaluator", "Navigator", "Screen", "History", "Location", "Storage", "Crypto", "CryptoKey", "SubtleCrypto", "IDBFactory", "IDBDatabase", "Notification", "Permissions", "Clipboard", "DataTransfer", "DataTransferItem", "DragEvent", "WheelEvent", "TouchEvent", "AbortController", "AbortSignal", "ReadableStream", "WritableStream", "TransformStream", "TextEncoder", "TextDecoder", "DOMTokenList", "DOMRect", "DOMRectReadOnly", "DOMStringMap", "DOMException", "DOMImplementation", "NodeList", "HTMLCollection", "NamedNodeMap", "MediaQueryList", "VisualViewport", "TrustedHTML", "TrustedScript", "TrustedScriptURL", "TrustedTypePolicy", "TrustedTypePolicyFactory"]) {
+    if (typeof g[name] === "undefined") {
+      const ctor = { [name]: function () {} }[name];
+      Object.defineProperty(ctor, "name", { value: name });
+      g[name] = ctor;
+    }
+  }
+
   // The iframe is the one element whose behaviour the VM measures: assigning `src` starts a frame.
   // The frame's own interpreter is *not* installed here - the VM evaluates a generated copy of it in
   // the frame realm itself, and doing it for it changes what that copy can resolve (measured in the
