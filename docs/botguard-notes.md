@@ -3522,3 +3522,11 @@ Two shim rules that came out of this round and must not be undone:
 
 * an iframe's `contentWindow` is never null; it is a window from creation;
 * `atob`/`btoa` must accept detached calls (75) - a receiver check turns the mint into an error token.
+
+### 77b. One window per iframe, not one per navigation
+
+Assigning `src` after the realm already exists must *navigate* that window, not create a second one.
+Both ports now keep `{frameRealm}` per element and only create a realm on first need; `src` re-navigates
+(the frame count in the d8 run is still 2 because the VM's boot creates a second iframe, which is what a
+retry looks like from the outside). Token size is stable at 801 chars / 600 B across runs, its random
+parts change per nonce, and the 85 bytes after the marker are still identical to the browser's.

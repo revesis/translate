@@ -132,22 +132,36 @@ function makeElement(realm, tag) {
     // In a browser an iframe has a WindowProxy from the moment it is created (about:blank), not only
     // after `src` is assigned. Measured: the VM reads through a freshly created iframe's contentWindow,
     // and returning null there produces `Cannot read properties of null (reading 'String')`.
+    // A browser gives an iframe one window for its whole life: creating it (about:blank), assigning
+    // `src` and re-assigning it all navigate that same WindowProxy. Measured: returning null before
+    // `src` leaves the interpreter without a scope object, and creating a second realm on `src` adds a
+    // frame the VM did not ask for (frame count 2 instead of 1).
+    let frameRealm = null;
     let frameWin = null;
-    const ensureFrame = () => {
-      if (!frameWin) realm.onFrameSrc(el, "");
-      return frameWin;
+    const navigate = (src) => {
+      if (!frameRealm) {
+        frameRealm = makeRealm("frame" + shared.frames.length);
+        shared.frames.push(frameRealm);
+        frameWin = frameRealm.g;
+      }
+      frameRealm.g.location.href = resolveUrl(String(src || ""), (realm.document && realm.document.URL) || "https://translate.google.com/");
+      Promise.resolve().then(() => el.dispatch("load", { type: "load", target: el }));
     };
     Object.defineProperty(el, "src", {
       get() { return el._src || ""; },
       set(v) {
         el._src = String(v);
         log(realm.label, "iframe.src =", el._src.slice(0, 100));
-        realm.onFrameSrc(el, el._src);
+        navigate(el._src);
       },
     });
-    Object.defineProperty(el, "contentWindow", { get() { return ensureFrame(); }, set(w) { frameWin = w; } });
-    Object.defineProperty(el, "contentDocument", { get() { return ensureFrame().document; } });
-    el.__setFrameWin = (w) => { frameWin = w; };
+    Object.defineProperty(el, "contentWindow", {
+      get() { if (!frameRealm) navigate(""); return frameWin; },
+      set(w) { frameWin = w; },
+    });
+    Object.defineProperty(el, "contentDocument", {
+      get() { if (!frameRealm) navigate(""); return frameWin.document; },
+    });
   }
   return el;
 }
