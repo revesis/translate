@@ -3232,3 +3232,37 @@ difference could in principle be caused by the patch rather than by the realm. W
 carrying forward is that it is reproducible, it is at a named program position, and it has the right
 shape - a slot holding data where a function is required. The patched build's [EVALLOG] from the
 *trusted* path is what decides it.
+
+## 69. The stream is one outer loop, and the realms differ in how far the pointer advances per iteration
+
+Reading the collapsed streams in order (section 68) shows the shape of the program, which the token
+never did:
+
+```
+175814 f=30   ->  175840 f=3  ->  175864 f=443 -> 175898 f=263 -> 175924 f=37 -> 175964 f=37
+             ->  176030 f=467 -> jump back into the 69118/69220 region -> 69144 f=107 -> ... -> 175814
+```
+
+So the program is **one outer loop**: a fixed tail (175814-176030) collects/writes, then it jumps into a
+small handler region around 69k, runs a handful of instructions there, and returns. Each pass moves the
+jump target on (69118 -> 69220 -> 69246 -> ...), i.e. that region is a *dispatch table* walked by
+pointer.
+
+The difference is inside one pass:
+
+```
+node   69144 f=107  -> next 69152 f=92 -> 69160 f=69 (a STRING) -> 69168 f=443
+chrome 69144 f=107  -> next 69168 f=443
+```
+
+The instruction at 69144 is the same source in both runs
+(`function(z,g,V,L,Y){(V=a((Y=C((L=n((g=W(15,I),z),35),K),g),L),z),E)(L,z,V+Y)}`), yet the pointer after
+it is 69152 in Node and 69168 in Chrome - 8 bits consumed versus 24. Two instructions (`f=92`, `f=69`)
+exist in Node's stream and **never** in Chrome's (14 and 11 occurrences vs 0). Since `f=92`'s handler is
+byte-identical to `f=107`'s, the program is running the same code under a different field id, and `f=69`
+is a *string* slot being dispatched as an instruction.
+
+That is the mechanism to chase next: the operand read after a dispatch consumed a different number of
+bits in the two realms, so everything after it shifts. Whether that is a keystream state difference or a
+jump target computed from a value is what the trusted-path log has to answer - both realms decode the
+same 256 instructions before it, so the blob and the keystream agree up to there.
