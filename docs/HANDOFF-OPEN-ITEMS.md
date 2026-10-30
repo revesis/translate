@@ -43,31 +43,51 @@ is spent *as jsdom*; the same question in a `node:vm` realm is the live line - s
   as a **tag-132 record** - 2054 B in the Node run. A trusted mint catches nothing and has no tag-132
   record. Section 2b's "three identical 542-byte blocks" are three recorded exceptions.
 
-**What is open.** The program advances two instructions in Node and then throws
-(`Cannot read properties of null (reading 'String')` at column 32012 of the generated frame source,
-handler `GK`; downstream `V.apply` at 30177). Chrome does not throw there. Section 62 records the two
-traps that now bound this: the frame copy is *generated* from the page text (so patches propagate and
-columns are stable), and the frame's `eval` is the interpreter's own scope-bound eval, so neither it nor
-its call site may be wrapped - a call-through alone changes the program's behaviour. Node's inspector
-does not pause on caught exceptions in a `vm` context (measured), so the throw has to be reached another
-way.
+**What is open (updated, sections 70-83).** The two host bugs that held this line are found and fixed:
+
+* an iframe has a WindowProxy **from creation**, not only after `src`; returning null there made the
+  interpreter read `null["String"]` during its own boot. `research/d8_mint.js` and `research/node_mint.mjs`
+  both keep one window per frame and navigate it on `src` (section 77);
+* `atob`/`btoa` must accept detached calls, and receiver guards on twenty host operations change nothing
+  at all (sections 75, 81) - the four `Illegal invocation` errors in the trusted log are the *page's*
+  scripts, not the VM's probes.
+
+**The lab is now `d8`**, built from the same checkout as the trusted browser binary: `ninja -C out/Rel d8`
+is ten link steps, `V8 version 15.9.40`, and it carries the `[ERRLOG]`/`[EVALLOG]`/`[EVALSRC]` patches plus
+`BG_ERRSTK=1` for throw sites (section 76). Node was retired as the engine-version hypothesis is dead: d8
+fails and then succeeds exactly like Node did (sections 76-77).
+
+**Where the bytes stand.** For the live image request the browser mints ~1429 chars (trusted band,
+1405-1447) and d8 mints 1253; for a small payload d8 mints 801. d8's engine-error count is 1 against
+Chrome's 12, and the one it keeps is the same one Chrome reports first (section 77).
+
+**Live requests, already spent (sections 79-80).** A d8 token and a build-mismatched signer token both
+return `HTTP 200` with the uploaded image echoed back; section 54's matched signer token returned OCR text.
+So **200 means nothing** - the echo is what any token the service will not fully credit gets - and the
+discriminator is the **length regime**, i.e. the missing ~176 chars.
+
+**Where the difference lives now.** The "generated frame copy" is not a copy: it is a **roll call**, the VM
+re-evaluating each helper's name and source in the frame realm. Same helper set in both, different order,
+and Chrome's stream additionally probes `window`, `null`, `x`, `a$` - the host lookups and error mining that
+produce the token's strings. d8 never reaches the `window` probe (section 82). Field ids are computed by
+`fC` (`y=W(12,k)`), so a shift in what consumes ids before the roll call moves the whole table, which is
+consistent with "same helpers, different order" (section 83).
 
 **Next step, in order.**
 
-1. `Debugger.setBreakpointOnFunctionCall` on the frame realm's `eval` object (breakpoints are invisible
-   to the VM, section 5): read the generated source out of the call frame without touching the call, and
-   read the handler's locals at 32012. That is the one instrument left that neither rewrites the eval
-   nor depends on exception pauses.
-2. If that is blocked too, drop to the bytecode line: `research/disasm.py` / `read_records.py` against
-   the program for the two instructions that run before the throw, and name the field `GK` reads as
-   null.
-3. When the token lands at ~1075 B, mint twice in one process and check that only the nonce/byte-4
-   differ (section 58's invariant), then spend one live request (`research/live_test.py`) with a
-   Node-minted token in a Chrome-minted envelope.
+1. Read the install table **without** patching the interp text (section 83's patch moved the token
+   801 -> 1177): after `Realm.eval(frame.r, ...)` probe `typeof q`, `typeof fC` in the frame realm and, if
+   they are reachable, wrap them there instead of editing the source.
+2. Find what the VM reads between the two `fC(6,z,21,0,1)` / `fC(6,z,20,0,2)` boots and its first mined
+   name - that interval is where the state diverges, and the roll-call stream is the signal (success looks
+   like `window`, `null`, `x`, `a$` appearing).
+3. Only when d8 lands in 1405-1447 chars for a build that matches its own page load: re-establish a
+   **matching-build** control (section 54's shape, not section 80's confounded one), then spend the single
+   live request.
 
-**Trap.** Never observe by patching an eval site: adding a `console.log` to
-`function(w){return eval(w)}` makes the first handler throw `fC is not defined`. Use
-`Array.prototype`/`btoa` hooks or the CDP `Debugger`, and keep text patches off the eval path.
+**Trap.** Never observe by patching an eval site or any interp text you then measure: section 65's
+`fC is not defined` and section 83's 801 -> 1177 both came from that. Use C++ logging in d8/Chrome, or
+hooks installed from outside the realm.
 
 ---
 
