@@ -3530,3 +3530,33 @@ Both ports now keep `{frameRealm}` per element and only create a realm on first 
 (the frame count in the d8 run is still 2 because the VM's boot creates a second iframe, which is what a
 retry looks like from the outside). Token size is stable at 801 chars / 600 B across runs, its random
 parts change per nonce, and the 85 bytes after the marker are still identical to the browser's.
+
+## 79. First live request with a browserlessly minted token: HTTP 200, token accepted, no extraction
+
+`research/d8_live_test.py`: the page is loaded in a browser only for the *request* material (cookies,
+`f.sid`, `bl`) and the build material of that load; the token comes from `d8_mint.js` on the V8 shell.
+
+Dry run (build `U5tYCxBAtKrhIfdN`): 1253 chars / **939 B**, marker at offset 5, no engine error.
+
+The one real request (build `wlvZkANqlDPB_YSU`, one POST, no retries):
+
+```
+d8 mint: 2923 chars / 2191 B, 2 frames, no error
+HTTP 200  wrb.fr payload = 1 element = the base64 PNG echoed back
+```
+
+Read it against the vocabulary in `live_test.py`: `accepted` would be a 4-element payload (OCR text +
+translation), `rejected` would be 400 + an `er` chunk. What happened is neither - the service answered
+200 and echoed the image, i.e. **the token passed the gate but the call extracted nothing**. So the
+question "can a token be minted without a browser" is now "a browserless token is not rejected; it is
+also not yet enough".
+
+Two things to note before the next request:
+
+* 2191 B is inside the *degraded* band (the crash-log tokens are 2114-2170 B), while that same day's dry
+  run produced 939 B - close to the trusted 1063-1078 B. The build rotated between the two runs, so the
+  first thing to check is whether the new build's interp makes d8 fall into the degraded path again
+  (`[ERRLOG]` count for that run was not captured - it should be).
+* a control is needed before reading anything into the 1-element payload: the same envelope with a
+  browser-minted token. If the control also returns 1 element, the envelope is what is wrong, not the
+  token.
