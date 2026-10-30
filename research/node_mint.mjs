@@ -40,10 +40,52 @@ const freq = readFileSync(freqPath, "utf8");
 
 const log = (...a) => { if (DEBUG || TRACE) console.log("[dbg]", ...a); };
 let evalSeq = 0;
+// A sloppy bare call of a Node-created function gets Node's global as `this`, not the realm's.
+const NODE_GLOBAL = globalThis;
 const CAPTURED = [];
 if (TRACE) {
   process.on("uncaughtException", (e) => log("UNCAUGHT", String(e && e.stack ? e.stack.split("\n").slice(0, 4).join(" | ") : e)));
   process.on("unhandledRejection", (e) => log("REJECTED", String(e)));
+}
+
+/**
+ * WebIDL operations require their receiver, and the VM probes exactly that (four `Illegal invocation`
+ * errors in a trusted run's engine log). A plain JS method that always works is therefore detectable,
+ * so `--env webidl` wraps the host methods in sloppy-mode functions that check the receiver's shape.
+ */
+function webidl(check, impl) {
+  return function (...args) {
+    if (!check(this)) throw new TypeError("Illegal invocation");
+    return impl.apply(this, args);
+  };
+}
+
+const isNode = (t) => (t) => t && (t.nodeType === 1 || t.nodeType === 9 || t.nodeType === 11);
+const isDoc = (t) => t && t.nodeType === 9;
+const isWin = (g) => (t) => t === g;
+const isPerf = (t) => t && typeof t.now === "function" && t.__perf === true;
+
+/**
+ * The VM's only host probes are `window`, `document.createElement('div').style` and
+ * `document.createElement('img')` (measured: the complete short-eval catalogue of a trusted run), so
+ * these two objects are worth more fidelity than the rest of the shim put together.
+ */
+function makeStyle() {
+  const props = new Map();
+  const style = {
+    get cssText() { return [...props].map(([k, v]) => `${k}: ${v};`).join(" "); },
+    set cssText(v) { props.clear(); String(v || "").split(";").forEach((d) => { const [k, val] = d.split(":"); if (k && val) props.set(k.trim(), val.trim()); }); },
+    get length() { return props.size; },
+    item(i) { return [...props.keys()][i] || ""; },
+    getPropertyValue(k) { return props.get(String(k)) || ""; },
+    setProperty(k, v) { props.set(String(k), String(v)); },
+    removeProperty(k) { const old = props.get(String(k)) || ""; props.delete(String(k)); return old; },
+    getPropertyPriority: () => "",
+    display: "", visibility: "", width: "", height: "", color: "", position: "",
+    getAttribute: () => null, setAttribute: () => {}, removeAttribute: () => {},
+  };
+  Object.defineProperty(style, "constructor", { value: function CSSStyleDeclaration() {} });
+  return style;
 }
 
 /** A DOM node good enough for the interpreter: style, children, events. */
@@ -52,7 +94,7 @@ function makeElement(realm, tag) {
   const el = {
     tagName: String(tag).toUpperCase(),
     nodeType: 1,
-    style: {},
+    style: ENV.includes("style") ? makeStyle() : {},
     children: [],
     ownerDocument: null,
     dataset: {},
@@ -97,9 +139,19 @@ function makeElement(realm, tag) {
     get offsetWidth() { return 0; },
     getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
     attachShadow: () => makeElement(realm, "shadow"),
+    decode: () => Promise.resolve(),
   };
   // An iframe is the one element whose behaviour the VM measures: `src` assignment is
   // what starts the frame, and `load` / `error` are what it waits for.
+  if (String(tag).toLowerCase() === "img") {
+    el.complete = true;
+    el.naturalWidth = 0;
+    el.naturalHeight = 0;
+    el.width = 0;
+    el.height = 0;
+    el.onload = null;
+    el.onerror = null;
+  }
   if (String(tag).toLowerCase() === "iframe") {
     let frameWin = null;
     Object.defineProperty(el, "src", {
@@ -113,6 +165,14 @@ function makeElement(realm, tag) {
     Object.defineProperty(el, "contentWindow", { get: () => frameWin, set: (w) => { frameWin = w; } });
     Object.defineProperty(el, "contentDocument", { get: () => (frameWin ? frameWin.document : null) });
   }
+  if (ENV.includes("webidl")) {
+    for (const m of ["appendChild", "removeChild", "insertBefore", "addEventListener",
+                     "removeEventListener", "setAttribute", "getAttribute", "hasAttribute",
+                     "removeAttribute", "getElementsByTagName", "querySelector", "querySelectorAll",
+                     "dispatch", "contains", "getBoundingClientRect"]) {
+      if (typeof el[m] === "function") el[m] = webidl(isNode(el), el[m]);
+    }
+  }
   return el;
 }
 
@@ -123,6 +183,11 @@ function makeRealm(label, shared) {
   const g = runInContext("globalThis", ctx);
 
   const realm = { label, ctx, g, document: null, timers: [] };
+  // WebIDL-ish host functions: sloppy (so a detached call gets the realm global) but strict about a
+  // foreign receiver, which is how a browser answers `fn.apply({}, args)` with "Illegal invocation".
+  const hostFn = (impl) => runInContext(
+    '(function (f) { return function () { if (this !== globalThis) { ' +
+    'throw new TypeError("Illegal invocation"); } return f.apply(null, arguments); }; })', ctx)(impl);
 
   const body = makeElement(realm, "body");
   const head = makeElement(realm, "head");
@@ -130,7 +195,7 @@ function makeRealm(label, shared) {
   docEl.appendChild(head);
   docEl.appendChild(body);
 
-  realm.document = {
+  const doc = {
     label,
     nodeType: 9,
     contentType: "text/html",
@@ -165,6 +230,17 @@ function makeRealm(label, shared) {
     el.ownerDocument = realm.document;
     el.document = realm.document;
   }
+  if (ENV.includes("webidl")) {
+    doc.createElement = webidl(isDoc, doc.createElement);
+    doc.createTextNode = webidl(isDoc, doc.createTextNode);
+    doc.getElementById = webidl(isDoc, doc.getElementById);
+    doc.getElementsByTagName = webidl(isDoc, doc.getElementsByTagName);
+    doc.querySelector = webidl(isDoc, doc.querySelector);
+    doc.querySelectorAll = webidl(isDoc, doc.querySelectorAll);
+    doc.addEventListener = webidl(isDoc, doc.addEventListener);
+    doc.removeEventListener = webidl(isDoc, doc.removeEventListener);
+  }
+  realm.document = doc;
   realm.document.defaultView = g;
   realm.document.location = null;
 
@@ -276,15 +352,11 @@ function makeRealm(label, shared) {
       onLine: true,
     },
     screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-    // WebIDL operations require their receiver: in Chrome `var f = window.btoa; f("x")` throws
-    // "Illegal invocation", and the VM probes exactly that (4 of them in a trusted run's [ERRLOG]).
-    // A plain JS function that always works is therefore a detectable difference.
-    // btoa must stay lenient too: the interpreter calls it detached (`G(X)`), and a receiver check
-    // there turns the mint into the "E:Illegal invocation" error token (measured).
+    // btoa/atob stay lenient: every receiver guard tried here (strict, sloppy-in-realm, per-realm)
+    // turns the mint into the "E:Illegal invocation" error token, because the interpreter reaches
+    // them through paths a browser also rejects but that it expects to succeed. See section 73.
     btoa: (s) => Buffer.from(String(s), "binary").toString("base64"),
-    // atob must stay lenient: the interpreter itself calls it bare (`atob(...)` at its entry), so a
-    // receiver check there aborts the mint before it starts (measured).
-    atob: (s) => Buffer.from(s, "base64").toString("binary"),
+    atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
     console,
     requestAnimationFrame: (fn) => setTimeout(() => fn(performance.now()), 16),
@@ -410,6 +482,39 @@ try {
       const pad = src.length - src.replace(/^\n+/, "").length;
       writeFileSync(`/tmp/frame_src_${i}_pad${pad}.js`, src);
     });
+  }
+  {
+    // Field-write trace (research patch inside E/q): who writes what kind of value where.
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__wr;
+      if (Array.isArray(arr) && arr.length) {
+        out["wr_" + n] = arr.length;
+        writeFileSync(`/tmp/wr_${n}.json`, JSON.stringify(arr));
+      }
+    }
+  }
+  {
+    // Slot-value kinds read by Ss (research patch): [fieldId, typeof value] per call.
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__ue;
+      if (Array.isArray(arr) && arr.length) {
+        out["ue_" + n] = arr.length;
+        writeFileSync(`/tmp/ue_${n}.json`, JSON.stringify(arr));
+      }
+    }
+  }
+  {
+    // Helper-call trace (research patch inside n/q/E/a): what the interpreter is handed.
+    const cands = [["page", page.g], ...shared.frames.map((f, i) => ["frame" + i, f.g])];
+    for (const [n, g] of cands) {
+      const arr = g.__tr;
+      if (Array.isArray(arr) && arr.length) {
+        out["tr_" + n] = arr.length;
+        writeFileSync(`/tmp/tr_${n}.json`, JSON.stringify(arr));
+      }
+    }
   }
   {
     // Instruction stream (research patch inside Yq: [pointer, fieldId] per dispatched instruction).

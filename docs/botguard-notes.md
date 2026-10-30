@@ -3331,3 +3331,87 @@ then the helper re-installs (`n=`, `q=`, `E=`, `a=`, `Z=`).
   mint into the `E:Illegal invocation` error token (813 chars). In a browser this works because a
   sloppy-mode detached call still has the global object as its receiver, which the WebIDL binding
   accepts - so the shim must not be stricter than the browser.
+
+## 73. The VM's whole host surface, enumerated from the trusted run
+
+The patched build logs every dynamic compilation. In a trusted run there are 257 of them, and only
+**62 distinct short ones** (<= 40 chars) - these are the VM's string-mining probes. The list is the
+complete answer to "what does the token read from the browser":
+
+```
+1   C  E  F  W  Z  a  d  n  q                       interpreter identifiers
+2   $q Eb HO IV MT M_ Ss Un V_ XZ YU Yq ZP a$ b7 fC fT js l7 nT sn tf vL
+2   []
+3   x='                                   -> SyntaxError: Invalid or unexpected token
+4   ({})      4  null
+6   null.x                                -> Cannot read properties of null (reading 'x')
+6   window                                -> THE GLOBAL
+11  2.32831e-10                           -> float formatting probe
+11  z8p1.p8='x'                           -> ReferenceError: z8p1 is not defined
+13  new Array(-1)                         -> RangeError: Invalid array length
+14  0,function(){}
+15  (1).toString(0)                       -> RangeError: toString() radix argument must be between 2 and 36
+15  var z9p3;z9p3.y                       -> Cannot read properties of undefined (reading 'y')
+19  /.*\d:\d\d | \d+$/g                   -> date/time parsing (timezone digits)
+22  0,function(z){IV(0,z)} ... {XZ(1,z)}  helper installs
+26  var eval="drahmkzqfb";eval            -> shadowed-eval probe
+27  0,function(){fC(6,I,5,0,4)}
+29  (0,function(a,b){return b-a})         comparator
+29  document.createElement('img')         -> HOST
+31  0,function(z){IV(3,z),BD=41-nv}
+34  0,function(J){J[0]=this.h5()-J[1]}    clock probe (performance.now)
+35  document.createElement('div').style   -> HOST
+38  0,function($){for($ in $)this.push($)} key enumerator
+```
+
+Three consequences:
+
+* the environment surface is **three expressions**: `window`, `document.createElement('div').style`,
+  `document.createElement('img')`. There is no navigator, no screen, no canvas, no WebGL, no fonts,
+  no audio - the "device fingerprint" in the token is built from *engine behaviour and error texts*,
+  not from the machine;
+* the mining is text-based: the VM provokes V8 errors and slices the message. Anything that changes an
+  error message changes the token;
+* Node 26 (V8 14.6) reproduces **all seven** mined messages byte-for-byte (`Cannot read properties of
+  null (reading 'x')`, `z8p1 is not defined`, `Invalid array length`, `toString() radix argument must
+  be between 2 and 36`, `Cannot read properties of undefined (reading 'y')`, `Invalid or unexpected
+  token`, `Function.prototype.toString requires that 'this' be a Function`). The engine-version
+  hypothesis is therefore dead: the strings are identical.
+
+## 74. Field-level trace of the failing probe
+
+Patching `Ss` (the slot reader) and `E`/`q` (the slot writers) with plain array pushes leaves the Node
+token at 2893 chars, so the trace is non-perturbing. It says:
+
+* the slots that hold *host* values hold exactly what the shim provides:
+  `field 90 = (t) => makeElement(realm, t)` (createElement), `field 14 = appendChild(c) {...}`,
+  `field 15 = function push() { [native code] }`;
+* the slots that hold *strings* hold mined names: `field 65 = "Array"`, `field 105 = "toString"`
+  (written as `"replace"` then `"toString"` at trace positions 1629 / 1653);
+* the handler that the trusted run throws `Illegal invocation` from - four times - is the *same*
+  handler Node dies in:
+
+```
+function(z,g,V,L,Y,w){for(w=44;w!=38;)w==61?(L=Ss(6,24,z,1,0),V=L.ue,Y=L.Ka,
+  E(L.be,z,V.apply(Y,L.H)),h.bw=B.K(),w=16):...}
+```
+
+  In Node the slot holds the *string* `"toString"`, so the failure is `V.apply is not a function`; in
+  Chrome the same handler reaches a *native function* and the failure is `Illegal invocation`. Both
+  are caught, so this is a probe of *native authenticity* (`fn.apply(foreignReceiver, args)` must
+  throw), not the branch that decides the token - but it is the one place where the two realms
+  visibly disagree about a host value's kind.
+
+## 75. Every receiver guard on btoa/atob breaks the mint
+
+Measured four ways (strict guard, `this !== g`, `this !== globalThis`, a sloppy function created
+*inside* the realm so a bare call gets the realm global): each one turns the mint into the
+`E:Illegal invocation` error token (813-822 chars). The interpreter reaches btoa/atob through calls a
+browser would also reject but that it expects to succeed, so the guard cannot be global - it has to be
+per-method and mirror the exact receiver the VM passes. `atob` is called bare at the interpreter's own
+entry (`this.mz=H(8,28,atob(K),255)`), which is the call that dies first.
+
+Also negative: enriching `style` (CSSStyleDeclaration-shaped: `cssText`, `length`, `item`,
+`getPropertyValue`, `setProperty`, `removeProperty`, a `constructor` name) and `img`
+(`complete`/`naturalWidth`/`naturalHeight`/`decode`) changes nothing - 2893 chars either way. Those
+two probes are satisfied by any object.
