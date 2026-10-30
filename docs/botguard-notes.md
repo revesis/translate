@@ -3177,3 +3177,27 @@ Consequence for method: the instruction stream is observable in Node and *not* i
 so the two cannot be compared directly by this instrument. That is the case for the patched build: a
 C++-level eval log records the trusted path without touching a single JS source, and the field ids each
 handler reads can be recovered from the logged sources.
+
+## 67. The instruction stream has run-to-run noise: single-run diffs are meaningless
+
+Two Node runs of the same material with the same `[pointer, field]` patch differ from each other:
+
+```
+run1 759 instructions   run2 762
+common prefix 104  ->  run1 repeats (66622, 3) twice, run2 once
+```
+
+Same program, same realm, same input - the loop counts are not deterministic (they are the VM's
+"collect until ..." loops, so the clock/`Math.random` decides how many iterations happen). Therefore:
+
+* a Node-vs-Chrome stream diff at index 50 (section 66) is **inside the noise band** and says nothing
+  about the realm. Do not chase it;
+* the stream has to be compared the way section 50 compares tokens: several runs per side, keep only
+  the positions that are *stable within* a side, then ask whether the other side differs where its own
+  runs agree;
+* the handler source string (element 3 of the log) carries per-run random names, so compare
+  `(pointer, field)` pairs only - the strings never match across runs even when the instruction does.
+
+This also gives the noise a name: it is the same timing-driven iteration count that made section 63's
+"too fast" gate plausible. If the Node/Chrome difference is real, it will show up as a *stable*
+difference, not as a count off by one.
