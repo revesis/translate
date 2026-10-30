@@ -3702,3 +3702,60 @@ Ways forward, in order of cost:
 3. treat the field-id shift as the hypothesis and look for what consumes ids before the roll call: the two
    `fC(6,z,21,0,1)` / `fC(6,z,20,0,2)` boots run in both realms, so the extra consumption is between them
    and the first mined name.
+
+## 84. Correction: the roll call is identical - section 82 compared a patched run to an unpatched one
+
+Section 82 said d8 mines a different set in a different order and never reaches the `window` probe. That
+was wrong, and it was wrong for the reason the notes keep recording: the d8 stream it used came from a run
+whose interp text carried a `console.log` at the eval site (section 65's trap), and it was compared against
+an *unpatched* Chrome stream. The unpatched d8 run (`logs/plain.log`, C++ `[EVALLOG]` only) reads:
+
+```
+fC(6,z,21,0,1)  fC(6,z,20,0,2)  [] [] []  var eval="drahmkzqfb";eval
+l7 n q E a ZP Z d fC b7 YU fT js HO Un sn Eb nT Yq W MT vL tf XZ Ss $q IV C
+IV(0,z) IV(7,z) V_ M_ M_=function(...) XZ(2,z) F [] []
+function($){for($ in $)this.push($)}
+nT l7 tf [] [] [] fT(0,1,...) IV(3,z) XZ(1,z) function(){fC(6,I,5,0,4)} IV(4,z) M_=... XZ(4,z)
+document.createElement('div').style
+document.createElement('img')
+window
+[] []
+```
+
+That is the browser's sequence, item for item, **including the three host probes**. So the roll call is not
+where the two environments differ, and the "state difference before the roll call" story of sections 82-83
+is withdrawn.
+
+What is left is the output, measured with the same material and the same `freq`:
+
+```
+chrome  1064 B   (probe_realm.py, build U5tYCxBAtKrhIfdN)
+d8       600 B   (d8_mint.js, same material, same freq)
+        identical through offset 90, diverging at 90
+```
+
+Same program, same roll call, same host probes - and 464 bytes that the browser writes and d8 does not.
+
+## 85. A non-perturbing window into the browser's VM state
+
+`research/probe_breakpoint.py` sets a CDP breakpoint inside the mining function
+(`function(w){return eval(w)}`, at the `return eval(w)` statement, so `w` is in scope) in the frame copy.
+Breakpoints move code positions, not source text, so the VM's anti-tamper checks cannot see them: the token
+stayed in the trusted band on five consecutive runs (1419 / 1445 / 1447 / 1456 / 1428 chars =
+1063-1091 B), where a one-line text patch moved it to 1177 (section 83).
+
+It yields, per hit, the name about to be evaluated, and `evaluateOnCallFrame` allows plain property reads of
+the VM's own state at that moment. First frame-realm snapshot (at `l7`):
+
+```
+K = the module object: 53 own keys
+  Gy,W7,og,Sj,fa,mz,Z,YB,D6,nG,gg,F,CG,bw,o,WT,U,dt,fG,G,wt,vT,u,W,oS,kB,ie,N1,A5,V,m,J,Y,Dk,
+  Rg,Uj,Q7,j,h,Ez,D,m1,t5,q1,T,jj,Oz,dg,LG,TC,uy,FY,jzua
+K.T  object      K.u  125 slots      slot 422 = {create, concat}, value is an object
+```
+
+Two practical notes: the page's own script also contains the anchor (script 52, 167 KB), and its `K` is a DOM
+element (`__wiz`, `__jsaction`) - the diagnostic must be pinned to the frame realm's short helper names or it
+reads the wrong object. And the naive tag-walk over the two tokens above (`tag | len16 | payload`) does not
+parse either token to the end, so naming the 464 missing bytes needs the emitter-side tools
+(`record_map.py` / `align_emits.py`) against these two captures rather than a from-scratch parser.
