@@ -42,7 +42,7 @@ URL = "https://translate.google.com/?sl=auto&tl=zh-CN&op=images"
 # The VM boots inside a frame that can be gone before the caller looks, so instrumentation
 # state is written to the top window instead of the realm that runs the code.
 TOP_SINK = "(window.top||window)"
-CHROME = "/usr/bin/google-chrome-stable"
+CHROME = os.environ.get("BG_CHROME", "/usr/bin/google-chrome-stable")
 
 JS = r"""(async () => {
   const arr = %s;

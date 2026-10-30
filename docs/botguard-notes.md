@@ -3759,3 +3759,47 @@ element (`__wiz`, `__jsaction`) - the diagnostic must be pinned to the frame rea
 reads the wrong object. And the naive tag-walk over the two tokens above (`tag | len16 | payload`) does not
 parse either token to the end, so naming the 464 missing bytes needs the emitter-side tools
 (`record_map.py` / `align_emits.py`) against these two captures rather than a from-scratch parser.
+
+## 86. The VM runs each environment probe in a fresh execution context - and we give it two
+
+The `[EVALLOG]` line carries the execution-context id, which is the column that had not been used yet.
+Grouping a trusted browser run by it:
+
+```
+59 evals  ctx 0x11a20197b92d      <- the frame copy (the roll call)
+ 3 evals  ctx 0x11a202056cf1
+ 1 eval   each of ~20 other contexts
+```
+
+and the mining probes are **each in a different context**:
+
+```
+window             0x11a201a9c179
+2.32831e-10        0x11a2020384a9
+null.x             0x11a2021c783d
+new Array(-1)      0x11a2021cb8c9
+z8p1.p8='x'        0x11a2021cf6b5
+(1).toString(0)    0x11a2021d35e5
+```
+
+So the VM spawns a **short-lived realm per probe** (through the iframe it creates; a parsed-script context
+per probe is what an `iframe` + `contentWindow.eval` looks like from the engine side). Our d8 shim reports
+`frames: 2` for the whole mint, so it only ever hands the VM two realms: the roll call runs, the probe
+budget runs out of worlds after `window`, and the mining stops there. That is the divergence - not the
+helper order (section 84), not the host surface (section 81), not the engine (section 76).
+
+It also explains the record that was believed impossible. Both tokens end with a **tag-132 record**, the
+VM's exception log:
+
+```
+chrome  tag 132 at offset 177, length 884, ends exactly at the end of a 1064-byte token
+d8      tag 132 at offset 389, length 208, ends exactly at the end of a  600-byte token
+```
+
+Chrome's log is the 12 engine errors it reports (section 71) - each probe throws, the message and stack are
+logged; d8's 208 bytes are the one error it reaches. The 464-byte difference is therefore mostly log, plus
+212 bytes that d8 writes elsewhere in the same window (616 vs 87 bytes before the log record).
+
+So section 59 / `token-format.md` item 3 needs a qualifier: the tag-132 record is not "absent in a trusted
+mint", it is *small* in one - the trusted regime carries the probes it ran, and the degraded regime carries
+a long stack for every helper-eval failure as well.
