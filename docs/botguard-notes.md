@@ -3201,3 +3201,34 @@ Same program, same realm, same input - the loop counts are not deterministic (th
 This also gives the noise a name: it is the same timing-driven iteration count that made section 63's
 "too fast" gate plausible. If the Node/Chrome difference is real, it will show up as a *stable*
 difference, not as a count off by one.
+
+## 68. First stable realm difference in the stream: field 443 is data in Node, a function in Chrome
+
+Collapsing consecutive repeats (section 67) makes each side deterministic: 3 Node runs give the same
+747 instructions, 3 patched-Chrome runs the same 880. Comparing those two collapsed streams, the common
+prefix is **256** instructions, and the difference is stable across runs:
+
+```
+node    ptr=69144 field=107  function(z,g,V,L,Y){(V=a((Y=C((L=n((g=W(15,I),z),35),K),g),L),z),E)(L,z,V+Y)}
+        ptr=69152 field=92   <same handler>
+        ptr=69160 field=69   value: string
+        ptr=69168 field=443  value: number
+chrome  ptr=69144 field=107  <same handler>
+        ptr=69168 field=443  function(z,g,V,L,Y){for(Y=56;Y!=53;)Y==56?Y=t(true,g,6,I,false,true)?53:16:...
+        ptr=69202 field=130  ...
+```
+
+Two facts, both stable:
+
+* Node executes the 69144 instruction **twice** (fields 107 then 92, same handler) where Chrome runs it
+  once and moves on;
+* at ptr 69168 the slot the dispatcher pulls up is a **number in Node and a function in Chrome**. The
+  accessor returns `create()` for a value slot and `prototype` for a function slot, so this is a real
+  difference in what the field table holds - and a number where a function is expected is exactly the
+  shape of the `V.apply is not a function` error this run later throws (section 59).
+
+Caveat, stated because it matters: Chrome's side here is the *instrumented* run (882-byte token), so the
+difference could in principle be caused by the patch rather than by the realm. What makes it worth
+carrying forward is that it is reproducible, it is at a named program position, and it has the right
+shape - a slot holding data where a function is required. The patched build's [EVALLOG] from the
+*trusted* path is what decides it.
