@@ -3463,3 +3463,62 @@ our shim disturbs.
 Practical value: this is a much better laboratory than Node - same engine as the target, our own
 embedder, working `[ERRLOG]`/`[EVALLOG]`, no browser process, and a 10-step rebuild - which makes the
 "reproduce Blink's binding layer" work measurable instead of speculative.
+
+## 77. The real blocker was `iframe.contentWindow`: null before `src`, a WindowProxy in a browser
+
+In a browser an iframe owns a WindowProxy from the moment it is created (about:blank); `src` only
+navigates it. Both shims returned `null` until the `src` setter fired. The interpreter reads *through* a
+freshly created iframe's `contentWindow` during its own boot, so it got `null` and reported it as
+
+```
+Cannot read properties of null (reading 'String')        <- window["String"] on a null WindowProxy
+Cannot read properties of undefined (reading 'replace')  <- the same null's btoa result
+```
+
+Fixing the getter (create the frame realm lazily on first access, `src` navigates an existing one) is the
+single largest step this line has made:
+
+| | before | after |
+| --- | --- | --- |
+| d8 engine errors | 25 (`n is not a function` x10, `V.apply is not a function` x9, ...) | **1** |
+| d8 token | mint never completed (threw `n.call is not a function`) | **801 chars / 600 B, completed** |
+| Node token | 2893 chars / 2169 B | 3016 chars (still the degraded band) |
+
+And the one error d8 still reports,
+
+```
+[ERRLOG] Cannot read properties of undefined (reading '422')
+```
+
+is *exactly* the first error the trusted browser run reports (section 71). The d8 token also carries the
+per-build marker **at offset 5 and 85 identical bytes after it**:
+
+```
+d8       0a 14 b8 14 4e | d0 00 06 7a 16 4e 5f 5a 16 5f b5 f9 d3 d5 7b 19 77 fd 26 00 40 01 10 0a d9 d4 9a 37 64 c1 ...
+trusted  12 0c b8 0c 68 | d0 00 06 7a 16 4e 5f 5a 16 5f b5 f9 d3 d5 7b 19 77 fd 26 00 40 01 10 0a d9 d4 9a 37 64 c1 ...
+                        ^ common from offset 5, divergence at offset 90
+```
+
+The five bytes in front are three varint length fields (`0a 14` = field 1, 20 bytes; `12 0c` = field 1,
+12 bytes), i.e. **d8 emits a shorter record than the browser, not a corrupt one**: 600 B against 1078 B
+(our build) / 1063 B (official Chrome), diverging at offset 90.
+
+## 78. What is still missing is exactly the Blink binding layer
+
+Count the engine errors each environment produces for the same program:
+
+```
+trusted Chrome   12   four of them `Illegal invocation` (Blink bindings, cannot exist in V8 alone)
+d8               1    the `(reading '422')` probe both share
+Node             25   plus a cascade of `is not a function` from the same root cause as 77
+```
+
+`Illegal invocation` is thrown by Blink's WebIDL bindings, not by V8, so a V8-only embedder cannot produce
+it however the shim is written - and the VM's native-authenticity probes read *which* failure a call
+produces. That is the remaining gap, and it is now the only one: the program is identical (70), the frame
+copy initialises (77), the mining runs, and the first error matches.
+
+Two shim rules that came out of this round and must not be undone:
+
+* an iframe's `contentWindow` is never null; it is a window from creation;
+* `atob`/`btoa` must accept detached calls (75) - a receiver check turns the mint into an error token.

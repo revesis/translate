@@ -173,7 +173,14 @@ function makeElement(realm, tag) {
         realm.onFrameSrc(el, el._src);
       },
     });
-    Object.defineProperty(el, "contentWindow", { get: () => frameWin, set: (w) => { frameWin = w; } });
+    // A browser gives an iframe a WindowProxy the moment it exists (about:blank), not only after `src`
+    // is set. Measured in d8: returning null there leaves the interpreter unable to initialise its
+    // helper table (`l7 is not a function`, then every handler eval fails).
+    const ensureFrame = () => {
+      if (!frameWin) realm.onFrameSrc(el, "");
+      return frameWin;
+    };
+    Object.defineProperty(el, "contentWindow", { get: () => ensureFrame(), set: (w) => { frameWin = w; } });
     Object.defineProperty(el, "contentDocument", { get: () => (frameWin ? frameWin.document : null) });
   }
   if (ENV.includes("proxy")) {

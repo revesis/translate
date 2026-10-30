@@ -50,21 +50,31 @@ ERR_ANCHOR = """  DirectHandle<String> msg = MessageFormatter::Format(isolate, i
 
 # The anchor already carries the following two lines, so the inserted code must not repeat them
 # (the first attempt did, and clang stopped at "redefinition of 'options'").
-ERR_CODE = """  // botguard research: log the engine-constructed error text (what the VM's collector records).
+ERR_CODE = """  // botguard research: log the engine-constructed error text (what the VM's collector records) and,
+  // when BG_ERRSTK is set, where it was thrown. The stack is what turns "n is not a function" into an
+  // address; it costs a stack walk, so keep it behind an env var for oracle runs.
   {
     std::unique_ptr<char[]> err_text = msg->ToCString();
     fprintf(stderr, "[ERRLOG] %s\\n", err_text.get());
+    if (getenv("BG_ERRSTK") != nullptr) {
+      std::ostringstream bg_ss;
+      isolate->PrintCurrentStackTrace(bg_ss);
+      fprintf(stderr, "[ERRSTK] %s\\n", bg_ss.str().c_str());
+    }
   }
 """
 
 
 def ensure_cstdio(text: str) -> str:
-    if "#include <cstdio>" in text:
+    """Add the logging includes once, after the first include line."""
+    need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>")
+            if h not in text]
+    if not need:
         return text
     i = text.find("\n#include ")
     if i < 0:
         raise SystemExit("no include block found")
-    return text[: i + 1] + "#include <cstdio>\n" + text[i + 1:]
+    return text[: i + 1] + "".join(h + "\n" for h in need) + text[i + 1:]
 
 
 def apply(path: str, anchor: str, code: str, dry: bool) -> bool:

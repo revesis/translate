@@ -129,7 +129,14 @@ function makeElement(realm, tag) {
     el.complete = true; el.naturalWidth = 0; el.naturalHeight = 0; el.width = 0; el.height = 0;
   }
   if (lower === "iframe") {
+    // In a browser an iframe has a WindowProxy from the moment it is created (about:blank), not only
+    // after `src` is assigned. Measured: the VM reads through a freshly created iframe's contentWindow,
+    // and returning null there produces `Cannot read properties of null (reading 'String')`.
     let frameWin = null;
+    const ensureFrame = () => {
+      if (!frameWin) realm.onFrameSrc(el, "");
+      return frameWin;
+    };
     Object.defineProperty(el, "src", {
       get() { return el._src || ""; },
       set(v) {
@@ -138,10 +145,8 @@ function makeElement(realm, tag) {
         realm.onFrameSrc(el, el._src);
       },
     });
-    Object.defineProperty(el, "contentWindow", { get() { return frameWin; }, set(w) { frameWin = w; } });
-    Object.defineProperty(el, "contentDocument", {
-      get() { return frameWin ? frameWin.document : null; },
-    });
+    Object.defineProperty(el, "contentWindow", { get() { return ensureFrame(); }, set(w) { frameWin = w; } });
+    Object.defineProperty(el, "contentDocument", { get() { return ensureFrame().document; } });
     el.__setFrameWin = (w) => { frameWin = w; };
   }
   return el;
@@ -262,6 +267,9 @@ function makeRealm(label) {
     fr.g.location.href = resolveUrl(String(src || ""), doc.URL);
     shared.frames.push(fr);
     el.__setFrameWin(fr.g);
+    log(label, "frame realm kinds:", Realm.eval(fr.r,
+      "[typeof window, typeof document, typeof document.createElement, typeof btoa, typeof String, " +
+      "typeof Object, typeof eval, typeof Function].join(',')"));
     Promise.resolve().then(() => el.dispatch("load", { type: "load", target: el }));
   };
   return realm;
