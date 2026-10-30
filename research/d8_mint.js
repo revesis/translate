@@ -177,7 +177,7 @@ function makeElement(realm, tag) {
   return el;
 }
 
-const shared = { frames: [], interp: "", timers: [] };
+const shared = { frames: [], interp: "", timers: [], intervalRuns: 0 };
 const D8_GLOBAL = globalThis;
 
 /**
@@ -257,11 +257,28 @@ function makeRealm(label) {
     window: g, self: g, top: g, parent: g, frames: g,
     document: doc, location: loc, performance: perf,
     btoa: hostFn(btoaBinary), atob: hostFn(atobBinary),
-    setTimeout(fn) { Promise.resolve().then(fn); return 1; },
-    clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
-    setImmediate(fn) { Promise.resolve().then(fn); return 1; },
+    setTimeout(fn, ms, ...rest) { shared.timers.push(() => fn(...rest)); return 1; },
+    clearTimeout() {},
+    setInterval(fn, ms, ...rest) {
+      // A real interval keeps firing; the VM's state machine depends on it staying alive, so re-arm
+      // (bounded, so a runaway interval cannot hang the drain loop).
+      const tick = () => {
+        if (shared.intervalRuns++ > 200) return;
+        try { fn(...rest); } catch (e) { log("interval threw", String(e).slice(0, 60)); }
+        shared.timers.push(tick);
+      };
+      shared.timers.push(tick);
+      return 1;
+    },
+    clearInterval() {},
+    setImmediate(fn, ...rest) { shared.timers.push(() => fn(...rest)); return 1; },
     queueMicrotask(fn) { Promise.resolve().then(fn); },
-    requestAnimationFrame(fn) { Promise.resolve().then(() => fn(0)); return 1; },
+    requestIdleCallback(fn) {
+      shared.timers.push(() => fn({ timeRemaining: () => 5, didTimeout: false }));
+      return 1;
+    },
+    cancelIdleCallback() {},
+    requestAnimationFrame(fn) { shared.timers.push(() => fn(0)); return 1; },
     cancelAnimationFrame() {},
     addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; },
     postMessage() {},

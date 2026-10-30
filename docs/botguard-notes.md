@@ -3834,3 +3834,32 @@ appear in both. d8's stream simply ends after `window` (eval 142-144 of 144).
 **Tooling caveat, add it to any patch that prints a context**: `context->ptr()` is a heap address. Use it at
 most as "same object right now", never as an identity key across a run, and prefer CDP when the question is
 "which realm".
+
+## 88. d8's mining is an exact prefix of the browser's: the walk is right and it stops at 143
+
+Aligning both `[EVALLOG]` streams at the first shared eval (the chrome stream carries two extra `1`-length
+evals before it) gives a clean answer:
+
+```
+d8      143 evals   (after alignment)
+chrome  253 evals
+common prefix 143 - i.e. all of d8, element for element
+d8 ends at:  ... 'window', '[]', '[]'
+chrome goes on: '[]', '[]', '[]', '2.32831e-10', ...
+```
+
+So the program's walk is **identical** and d8 simply stops. Everything before the stop - including the two
+`document.createElement` probes and `window` - matches, which is why the first 90 bytes of the token match
+too. The 464-byte difference is entirely what happens after eval 143.
+
+Tried and ruled out as the pacing: a real timer surface. The shim now implements `setTimeout`,
+`setInterval` (self-re-arming, bounded), `setImmediate`, `requestIdleCallback` and `requestAnimationFrame`
+as a job queue drained between microtask checkpoints - a shim that *accepts* a callback and never fires it
+is a silent truncation. Result: unchanged (801 chars, 144 evals). So the VM is not waiting on a timer it
+never gets.
+
+Next: the guard that decides continuation sits in the mining handler itself
+(`Y==56 ? Y = t(true,g,6,I,false,true) ? 53 : 16 : ...`). At the `window` hit in Chrome the breakpoint can
+read that call's value and the following `F(z,37)` / `Z(z.T,L)`; whatever makes it take the `53` (stop)
+branch is the answer, and it is a *decision*, not a missing object - the next probe in the browser is the
+number literal `2.32831e-10`, which needs nothing from the host.
