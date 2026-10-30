@@ -66,21 +66,23 @@ return `HTTP 200` with the uploaded image echoed back; section 54's matched sign
 So **200 means nothing** - the echo is what any token the service will not fully credit gets - and the
 discriminator is the **length regime**, i.e. the missing ~176 chars.
 
-**Where the difference lives now.** The "generated frame copy" is not a copy: it is a **roll call**, the VM
-re-evaluating each helper's name and source in the frame realm. Same helper set in both, different order,
-and Chrome's stream additionally probes `window`, `null`, `x`, `a$` - the host lookups and error mining that
-produce the token's strings. d8 never reaches the `window` probe (section 82). Field ids are computed by
-`fC` (`y=W(12,k)`), so a shift in what consumes ids before the roll call moves the whole table, which is
-consistent with "same helpers, different order" (section 83).
+**Where the difference lives now (corrected, section 84).** It is *not* the roll call: with an unpatched
+d8 run the mining sequence is item-for-item the browser's, including the `document.createElement('div').style`,
+`document.createElement('img')` and `window` probes (section 82 had compared a *patched* d8 run against an
+unpatched Chrome one - the section 65 trap). With the same material and the same `freq` the browser writes
+**1064 B** and d8 writes **600 B**, identical through offset 90. So 464 bytes that the browser emits are
+missing. Section 85 adds the instrument to chase them: a CDP breakpoint inside the mining function gives the
+browser's VM state and the name sequence **without perturbing** (five runs, token always 1428-1456 chars).
 
 **Next step, in order.**
 
-1. Read the install table **without** patching the interp text (section 83's patch moved the token
-   801 -> 1177): after `Realm.eval(frame.r, ...)` probe `typeof q`, `typeof fC` in the frame realm and, if
-   they are reachable, wrap them there instead of editing the source.
-2. Find what the VM reads between the two `fC(6,z,21,0,1)` / `fC(6,z,20,0,2)` boots and its first mined
-   name - that interval is where the state diverges, and the roll-call stream is the signal (success looks
-   like `window`, `null`, `x`, `a$` appearing).
+1. Name the 464 missing bytes: run `research/record_map.py` / `align_emits.py` against the two captures
+   (`/root/bg/cmp_chrome/token.bin` 1064 B and `/root/bg/cmp_d8.bin` 600 B, same material and `freq`, both
+   diverging at offset 90) and let the emitter map say which tags each side produced. A from-scratch
+   `tag|len16|payload` walk does **not** parse either token, do not retry it.
+2. Read the same records from the d8 side: the CDP breakpoint instrument (section 85) is Chrome-only, but
+   d8 now runs the same roll call, so the missing records are produced *after* it - break on the serializer's
+   assembly site in Chrome and compare with the d8 equivalent recovered from `[EVALLOG]`.
 3. Only when d8 lands in 1405-1447 chars for a build that matches its own page load: re-establish a
    **matching-build** control (section 54's shape, not section 80's confounded one), then spend the single
    live request.
