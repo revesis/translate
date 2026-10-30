@@ -163,10 +163,35 @@ function makeElement(realm, tag) {
       get() { if (!frameRealm) navigate(""); return frameWin.document; },
     });
   }
+  if (ENV.indexOf("webidl") >= 0) {
+    // DOM methods are WebIDL operations too: a foreign receiver must fail the way a browser fails, or
+    // the VM's authenticity probes see a plain JS function.
+    const guard = guarded(el);
+    for (const m of ["appendChild", "removeChild", "insertBefore", "addEventListener",
+                     "removeEventListener", "setAttribute", "getAttribute", "removeAttribute",
+                     "getElementsByTagName", "querySelector", "querySelectorAll", "contains",
+                     "hasChildNodes", "focus", "click", "getBoundingClientRect"]) {
+      if (typeof el[m] === "function") el[m] = guard(el[m]);
+    }
+  }
   return el;
 }
 
 const shared = { frames: [], interp: "" };
+const D8_GLOBAL = globalThis;
+
+/**
+ * WebIDL operations reject a foreign receiver with `Illegal invocation`, and the VM probes exactly that
+ * (four such errors in a trusted browser run). The guard has to accept a *detached* call, which in a
+ * classic script still arrives with a global as `this`: the realm global for a realm-created function,
+ * d8's own global for one created here. Anything else is a probe.
+ */
+function guarded(realmGlobal) {
+  return (impl) => function (...args) {
+    if (this !== D8_GLOBAL && this !== realmGlobal) throw new TypeError("Illegal invocation");
+    return impl.apply(null, args);
+  };
+}
 
 /** Absolute URL the way a frame resolves one; d8 has no URL class. */
 function resolveUrl(src, base) {
@@ -227,10 +252,11 @@ function makeRealm(label) {
     search: "?sl=auto&tl=zh-CN&op=images", pathname: "/",
   };
 
+  const hostFn = ENV.indexOf("webidl") >= 0 ? guarded(g) : (f) => f;
   Object.assign(g, {
     window: g, self: g, top: g, parent: g, frames: g,
     document: doc, location: loc, performance: perf,
-    btoa: btoaBinary, atob: atobBinary,
+    btoa: hostFn(btoaBinary), atob: hostFn(atobBinary),
     setTimeout(fn) { Promise.resolve().then(fn); return 1; },
     clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
     setImmediate(fn) { Promise.resolve().then(fn); return 1; },

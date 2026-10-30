@@ -3599,3 +3599,36 @@ Both usable handles point the same way:
 So the next request is only worth making once d8 lands in 1405-1447 chars for a build that matches its own
 page load, and a matching-build control has to be re-established first. That means closing the remaining
 ~180 chars, which is the Blink binding layer (section 78), not the request envelope.
+
+## 81. Receiver guards on the host methods change nothing - the four `Illegal invocation`s are not ours
+
+Implemented the WebIDL rule properly this time: a guarded host function accepts its own receiver, the
+realm global, or d8's global (a detached call in a classic script still arrives with a global), and
+throws `Illegal invocation` for anything else. Applied to `btoa`/`atob` and to sixteen element methods
+(`appendChild`, `addEventListener`, `getBoundingClientRect`, ...).
+
+```
+plain    801 chars, 1 engine error
+webidl   801 chars, 1 engine error     (identical)
+```
+
+So the VM never probes any of those twenty operations with a foreign receiver inside its own run. The
+four `Illegal invocation` errors in the trusted browser log most likely come from **the page's other
+scripts** during the load - `probe_realm.py` loads the real translate page, which runs Google's own code
+as well as the VM - and not from the attestation program at all. That retires the "native authenticity
+probe" reading of section 71 and with it the shim rule it implied.
+
+What still differs, measured on the same request payload (`freq` for the image RPC):
+
+```
+browser mint   ~1429 chars   trusted band
+d8 mint         1253 chars   (dry run, build U5tYCxBAtKrhIfdN)
+d8 mint          801 chars   (different payload, same build)
+```
+
+and the mining stream: the browser probes `x`, `null.x`, `window`, `z8p1.p8='x'`, `new Array(-1)`,
+`(1).toString(0)`, `var z9p3;z9p3.y` - names and error probes it needs in order to *build* strings -
+while d8 probes `l7`, `String`, `undefined`, `t5`, `n`. The VM is mining a different set because it is in
+a different internal state, and the missing ~176 chars in the token are the consequence, not the cause.
+That state difference is what the next round has to bisect, with the mining stream as the signal: it is
+short, ordered, and shifts the moment the environment changes.
