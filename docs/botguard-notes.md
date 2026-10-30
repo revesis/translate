@@ -3266,3 +3266,68 @@ That is the mechanism to chase next: the operand read after a dispatch consumed 
 bits in the two realms, so everything after it shifts. Whether that is a keystream state difference or a
 jump target computed from a value is what the trusted-path log has to answer - both realms decode the
 same 256 instructions before it, so the blob and the keystream agree up to there.
+
+## 70. The generated frame program is byte-identical in both realms
+
+The patched build dumps any eval source over 50 KB in full (`[EVALSRC]`), which settles a question the
+token could not: **what the frame realm actually runs**. Chrome 159 (trusted, 1073 B token) and Node
+produce the same text:
+
+```
+chrome core 62 021 chars   node core 62 080
+common prefix 26 875 chars - identical up to `V_=function(...)`, which is where the Node copy carries
+an ERRSTACK log this session inserted
+```
+
+Two consequences:
+
+* the "frame copy" is the **interpreter itself** (comments intact: `Copyright Google LLC
+  SPDX-License-Identifier: Apache-2.0`), not the program blob, and it is generated identically in both
+  realms - so the program is not what differs;
+* a text patch of the page copy **does** reach it (that is why the emit hook and the collector log
+  worked), which also means any such patch is visible to the interpreter's own checks (section 65).
+
+So the divergence has to be a *value* the interpreter reads from its realm, not the code it runs.
+
+## 71. A trusted run's engine log: 242 handlers and 12 errors, four of them "Illegal invocation"
+
+`[ERRLOG]` from the trusted path (our build, 1073 B token, no patch to any JS):
+
+```
+Cannot read properties of undefined (reading '422')
+Illegal invocation          x4
+Function.prototype.toString requires that 'this' be a Function
+Invalid or unexpected token
+Cannot read properties of undefined (reading 'y')
+Cannot read properties of null (reading 'x')        <- the deliberate probe
+Invalid array length                                <- the deliberate probe (new Array(-1))
+z8p1 is not defined                                 <- the deliberate probe
+toString() radix argument must be between 2 and 36  <- the deliberate probe ((1).toString(0))
+```
+
+Readings that matter:
+
+* **the trusted run throws too.** Errors are normal; what differs is that none of them end up in the
+  token (no tag-132 record), so section 59's "crash log" is about the *collector*, not about the VM
+  being error-free;
+* `Function.prototype.toString requires that 'this' be a Function` is section 65's mechanism, measured
+  from the engine side: the interpreter really does stringify things and probe the failure;
+* **four `Illegal invocation`s are native-authenticity probes** - the VM calls a host operation with a
+  receiver it does not accept and reads the failure. A shim whose methods are plain JS functions cannot
+  fail that way, which is a detectable difference in exactly the direction we are hunting.
+
+`[EVALLOG]` on the same run: 526 dynamic compilations, of which 242 are program handlers and ~120 are
+single identifiers / `[]` (the string-mining evals). Ordered, the first handlers are
+`fC(6,z,21,0,1)`, `fC(6,z,20,0,2)`, the `L=n(h,32)` handler, the char-code loop, the `_.$`/`_.M` loop,
+`var eval="..."`, the `Ss`/`V.apply` handler, then `l7=` and the arithmetic family (`V*Y`, `V-Y`, `V%Y`),
+then the helper re-installs (`n=`, `q=`, `E=`, `a=`, `Z=`).
+
+## 72. Two shim constraints measured the hard way
+
+* **`atob` must accept a detached call.** The interpreter calls it bare at its entry
+  (`this.mz=H(8,28,atob(K),255)`); giving it a receiver check aborts the mint before it starts
+  (`TypeError: Illegal invocation` from `interp.js:2:3715`).
+* **`btoa` must too.** `G=window.btoa; y=G(X)` is a detached call, and a strict receiver check turns the
+  mint into the `E:Illegal invocation` error token (813 chars). In a browser this works because a
+  sloppy-mode detached call still has the global object as its receiver, which the WebIDL binding
+  accepts - so the shim must not be stricter than the browser.

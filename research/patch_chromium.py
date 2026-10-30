@@ -48,14 +48,13 @@ ERR_ANCHOR = """  DirectHandle<String> msg = MessageFormatter::Format(isolate, i
   DCHECK(mode != SKIP_UNTIL_SEEN);
 """
 
+# The anchor already carries the following two lines, so the inserted code must not repeat them
+# (the first attempt did, and clang stopped at "redefinition of 'options'").
 ERR_CODE = """  // botguard research: log the engine-constructed error text (what the VM's collector records).
   {
     std::unique_ptr<char[]> err_text = msg->ToCString();
     fprintf(stderr, "[ERRLOG] %s\\n", err_text.get());
   }
-  DirectHandle<Object> options = isolate->factory()->undefined_value();
-
-  DCHECK(mode != SKIP_UNTIL_SEEN);
 """
 
 
@@ -85,6 +84,33 @@ def apply(path: str, anchor: str, code: str, dry: bool) -> bool:
     return True
 
 
+# The real eval path: GetFunctionFromString only covers the Function() constructor shape. Measured:
+# patching it alone produced 0 [EVALLOG] lines on a trusted mint (the ERRLOG hook fired 12 times).
+EVAL_EVAL_ANCHOR = """MaybeDirectHandle<JSFunction> Compiler::GetFunctionFromEval(
+    Isolate* isolate, DirectHandle<String> source,
+    DirectHandle<SharedFunctionInfo> outer_info, DirectHandle<Context> context,
+    LanguageMode language_mode, ParseRestriction restriction,
+    int parameters_end_pos, int eval_position,
+    ParsingWhileDebugging parsing_while_debugging,
+    bool private_name_lookup_skips_outer_class) {
+"""
+
+EVAL_EVAL_CODE = """  // botguard research: log every eval-compiled source (this is the path the VM's frame uses).
+  // Big sources (the VM's generated frame copy, ~62-64 KB) are dumped in full so the two realms'
+  // generated programs can be diffed; everything else is logged by length and head only.
+  {
+    int src_len = source->length();
+    std::unique_ptr<char[]> src_head = source->ToCString(0, src_len > 120 ? 120 : src_len);
+    fprintf(stderr, "[EVALLOG] len=%d ctx=%p head=%s\\n", src_len,
+            reinterpret_cast<void*>(context->ptr()), src_head.get());
+    if (src_len > 50000) {
+      std::unique_ptr<char[]> full = source->ToCString();
+      fprintf(stderr, "[EVALSRC] %s\\n[EVALSRC-END]\\n", full.get());
+    }
+  }
+"""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default="/root/chromium/src")
@@ -94,6 +120,7 @@ def main() -> None:
     targets = [
         (os.path.join(v8, "codegen", "compiler.cc"), EVAL_ANCHOR, EVAL_CODE),
         (os.path.join(v8, "execution", "messages.cc"), ERR_ANCHOR, ERR_CODE),
+        (os.path.join(v8, "codegen", "compiler.cc"), EVAL_EVAL_ANCHOR, EVAL_EVAL_CODE),
     ]
     ok = True
     for path, anchor, code in targets:

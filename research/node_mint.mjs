@@ -276,7 +276,14 @@ function makeRealm(label, shared) {
       onLine: true,
     },
     screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-    btoa: (s) => Buffer.from(s, "binary").toString("base64"),
+    // WebIDL operations require their receiver: in Chrome `var f = window.btoa; f("x")` throws
+    // "Illegal invocation", and the VM probes exactly that (4 of them in a trusted run's [ERRLOG]).
+    // A plain JS function that always works is therefore a detectable difference.
+    // btoa must stay lenient too: the interpreter calls it detached (`G(X)`), and a receiver check
+    // there turns the mint into the "E:Illegal invocation" error token (measured).
+    btoa: (s) => Buffer.from(String(s), "binary").toString("base64"),
+    // atob must stay lenient: the interpreter itself calls it bare (`atob(...)` at its entry), so a
+    // receiver check there aborts the mint before it starts (measured).
     atob: (s) => Buffer.from(s, "base64").toString("binary"),
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
     console,
