@@ -365,6 +365,10 @@ function main() {
     head: token ? token.slice(0, 64) : "",
     token: token || "",
     frames: shared.frames.length,
+    // fC() install trace (research patch): which field id each handler-table entry landed in.
+    ins_page: page.g.__ins ? page.g.__ins.slice(0, 24) : null,
+    ins_frame: shared.frames.length ? (shared.frames[0].g.__ins || []).slice(0, 24) : null,
+    ins_frame_n: shared.frames.length && shared.frames[0].g.__ins ? shared.frames[0].g.__ins.length : 0,
   }));
 }
 

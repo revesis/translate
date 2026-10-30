@@ -3666,3 +3666,39 @@ Practical consequence for the next round: the question to answer is what makes t
 `window` probe. The roll-call order is program-driven, so the state that shifts it is one of the values
 the VM reads *before* the roll call - and the roll call itself is now observable with a one-line patch
 and a two-minute d8 rebuild, with the four extra probes in chrome's stream as the success signal.
+
+## 83. Field ids come out of `fC` as data, and the trace perturbs the mint
+
+Instrumenting the install path (`fC`: `y=W(12,k); {f=S; while(M>S) f=f<<8|M_(k), M--} q(y,k,f)`) shows it
+writes **numbers**, not handlers, into the fields it computes:
+
+```
+frame0 installs, first 24 of 48
+[53,133120] [43,208] [0,16] [91,95] [100,1] [24,2] [99,732958446] [90,-2132610360] [52,-1032738375]
+[17,210517757] [422,130248] [36,0] [22,38] [25,463782196] [64,-1398121178] [422,61144] [43,-938796855] ...
+```
+
+* the ids are a mix of small numbers (`0`, `22`, `24`, `53`) and program-level ones (`422`, `397`), so the
+  handler table is not a contiguous block - a shift of a counter would move many of them at once, which is
+  consistent with section 82's "same helpers, different order";
+* `fC` writes the *same* field (`422`, the instruction pointer) twice with different values, i.e. it is
+  also the data-write path, not only an install path;
+* this patch perturbs: the token moved 801 -> 1177 chars (section 36's third regime), so these numbers are
+  read from a run that is no longer the one under study. Do not treat the sequence as ground truth without
+  a non-perturbing variant.
+
+All the frame-side work happens in **frame0** (page realm shows no installs at all), which confirms
+section 82's picture: the roll call and the install table are built in the frame realm, and that realm is
+the one whose state has to match the browser's.
+
+Ways forward, in order of cost:
+
+1. read the same table **without** touching the interp text - e.g. patch `q` from C++ is impossible, but
+   d8 can wrap the *global* `q` after `Realm.eval(page.r, interp)` if the interp leaks it (it does not), or
+   the frame's `q` can be captured from `Realm.eval(frame, "typeof q")` after install - a non-text probe
+   worth trying first;
+2. compare the *first* install id only, from a run with a single log line, keeping the perturbation small
+   enough that the token length stays at 801/1253;
+3. treat the field-id shift as the hypothesis and look for what consumes ids before the roll call: the two
+   `fC(6,z,21,0,1)` / `fC(6,z,20,0,2)` boots run in both realms, so the extra consumption is between them
+   and the first mined name.
