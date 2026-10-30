@@ -3803,3 +3803,34 @@ logged; d8's 208 bytes are the one error it reaches. The 464-byte difference is 
 So section 59 / `token-format.md` item 3 needs a qualifier: the tag-132 record is not "absent in a trusted
 mint", it is *small* in one - the trusted regime carries the probes it ran, and the degraded regime carries
 a long stack for every helper-eval failure as well.
+
+## 87. Correction: the `ctx=` column is a heap pointer, not a context id - section 86's mechanism is void
+
+`patch_chromium.py` prints `reinterpret_cast<void*>(context->ptr())`, i.e. the address of the context
+*object on the V8 heap*. That address moves with GC and allocation, so grouping evals by it and concluding
+"each probe runs in its own execution context" (section 86) is unfounded. Measured with CDP instead
+(`research/probe_contexts.py`, one pristine 1432-char mint):
+
+```
+contexts before mint 2, total 4
+  ctx 2 default=True type=default origin=https://translate.google.com
+  ctx 3 default=True type=default origin=https://translate.google.com
+```
+
+Two realms, not twenty - the page and its one frame, which is what the d8 shim also creates. So the VM does
+**not** spawn a realm per probe, and section 86's mechanism is withdrawn.
+
+What survives from 86 is only what was read off the tokens themselves, which needs no context theory:
+
+* both a trusted 1064-byte token and the 600-byte d8 token **end in a tag-132 record**, 884 bytes and 208
+  bytes respectively (each record's length lands exactly on the end of its buffer);
+* d8 writes 212 bytes *more* than the browser in the window before that record (299 vs 87 bytes at offset 90)
+  and 676 bytes fewer inside it.
+
+And the probe gap is real, measured by text rather than by context: `new Array(-1)`, `(1).toString(0)`,
+`z8p1...`, `z9p3...` appear in the browser's eval stream and never in d8's, while `null.x` and `window`
+appear in both. d8's stream simply ends after `window` (eval 142-144 of 144).
+
+**Tooling caveat, add it to any patch that prints a context**: `context->ptr()` is a heap address. Use it at
+most as "same object right now", never as an identity key across a run, and prefer CDP when the question is
+"which realm".

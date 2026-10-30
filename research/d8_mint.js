@@ -145,7 +145,7 @@ function makeElement(realm, tag) {
         frameWin = frameRealm.g;
       }
       frameRealm.g.location.href = resolveUrl(String(src || ""), (realm.document && realm.document.URL) || "https://translate.google.com/");
-      Promise.resolve().then(() => el.dispatch("load", { type: "load", target: el }));
+      shared.timers.push(() => el.dispatch("load", { type: "load", target: el }));
     };
     Object.defineProperty(el, "src", {
       get() { return el._src || ""; },
@@ -177,7 +177,7 @@ function makeElement(realm, tag) {
   return el;
 }
 
-const shared = { frames: [], interp: "" };
+const shared = { frames: [], interp: "", timers: [] };
 const D8_GLOBAL = globalThis;
 
 /**
@@ -318,7 +318,13 @@ function makeRealm(label) {
 }
 
 function drain(rounds) {
-  for (let i = 0; i < rounds; i++) %PerformMicrotaskCheckpoint();
+  for (let i = 0; i < rounds; i++) {
+    %PerformMicrotaskCheckpoint();
+    if (shared.timers.length) {
+      const fn = shared.timers.shift();
+      try { fn(); } catch (e) { log("timer threw", String(e).slice(0, 80)); }
+    }
+  }
 }
 
 function main() {
