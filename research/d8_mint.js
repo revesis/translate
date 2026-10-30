@@ -277,7 +277,9 @@ function makeRealm(label) {
       width: 1920, height: 1080, availWidth: 1920, availHeight: 1040,
       colorDepth: 24, pixelDepth: 24,
     },
-    console: { log: log, error: log, warn: log, info: log, debug: log },
+    console: { log: (...a) => log(label, ...a), error: (...a) => log(label, ...a),
+               warn: (...a) => log(label, ...a), info: (...a) => log(label, ...a),
+               debug: (...a) => log(label, ...a) },
   });
 
   if (ENV.indexOf("evalog") >= 0) {

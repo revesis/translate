@@ -3632,3 +3632,37 @@ while d8 probes `l7`, `String`, `undefined`, `t5`, `n`. The VM is mining a diffe
 a different internal state, and the missing ~176 chars in the token are the consequence, not the cause.
 That state difference is what the next round has to bisect, with the mining stream as the signal: it is
 short, ordered, and shifts the moment the environment changes.
+
+## 82. The mining is the interpreter rebuilding itself in the frame realm - and only the order differs
+
+Patching the single eval site (`function(w){return eval(w)}(u7(Z(z.T,L)))`, the only textual `eval(` in the
+interp) to log what it is about to evaluate shows what the "generated frame copy" really is: a **roll
+call**. For each helper the VM evaluates its *name* and then its *whole source* in the frame realm
+(`C`, then `C=function(J,k,u){u=J.u[k];...}`), i.e. it re-installs the interpreter there one function at a
+time, and the sequence of those re-installations is the program.
+
+Compare the sequences for the same build (`U5tYCxBAtKrhIfdN`):
+
+```
+chrome  l7 l7= n n= q q= E E= a a= ZP Z Z= d fC fC= b7 YU YU= fT js HO ...   (59 names)
+d8      $q d C C= js a a= q q= E E= n n= fT Z Z= YU YU= Yq Un MT nT ...       (50 names)
+```
+
+* **the same set of helpers**, in a different order - so nothing is missing from the environment in the
+  sense of a helper being unavailable;
+* chrome's stream carries four extra probes that d8 never makes: **`window`, `null`, `x`, `a$`** - the
+  host/global lookups and the error-mining probes (`null.x`, `x='`), i.e. exactly the ones whose messages
+  end up in the token;
+* d8's stream also re-mines the eval-site handler itself, because this diagnostic patch changed its
+  source - an artifact of section 65, not a finding.
+
+So the remaining difference is no longer "the shim is missing a host object" (section 81 showed the host
+methods are never probed), and no longer the engine (section 76): it is the **order and scope of the
+interpreter's own re-installation inside the frame realm**. Only once the VM reaches the point where it
+asks for `window` does it start mining error messages, and d8 never gets there - which is why its token
+is ~176 chars shorter and lands in the degraded band.
+
+Practical consequence for the next round: the question to answer is what makes the VM stop before the
+`window` probe. The roll-call order is program-driven, so the state that shifts it is one of the values
+the VM reads *before* the roll call - and the roll call itself is now observable with a one-line patch
+and a two-minute d8 rebuild, with the four extra probes in chrome's stream as the success signal.
