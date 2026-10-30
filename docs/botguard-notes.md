@@ -3560,3 +3560,42 @@ Two things to note before the next request:
 * a control is needed before reading anything into the 1-element payload: the same envelope with a
   browser-minted token. If the control also returns 1 element, the envelope is what is wrong, not the
   token.
+
+## 80. The control came back as the echo too - and it did not isolate what it was meant to
+
+One control request (`live_test.py --control`: a token from the shipped signer in the *same* envelope):
+
+```
+page load  build U5tYCxBAtKrhIfdN    sid/bl/cookies ok
+control token 1441 chars (shipped signer, build wlvZkANqlDPB_YSU...)
+HTTP 200  class=verified/echo  detail 1 element (the uploaded image, byte-identical)
+```
+
+That is the same answer the d8 token got, which *looks* like "the token is not what decides it" - but the
+control is confounded: the signer minted under build `wlvZkA...` while the cookies/`f.sid`/`bl` came from
+a page load that served `U5tY...`. Section 54's accepted control did not have that mismatch. So this run
+separates nothing, and the reading has to stay conservative.
+
+What the three requests together do establish:
+
+| token | length regime | build vs page | answer |
+| --- | --- | --- | --- |
+| shipped signer (54) | 1429 chars, trusted | matched | **accepted, OCR text** |
+| shipped signer (80) | 1441 chars, trusted | **mismatched** | 200 echo |
+| d8 mint (79) | 2923 chars, degraded | matched | 200 echo |
+
+So `200 + echo` is the answer for *any* token the service will not fully credit - wrong session, wrong
+build, or wrong length regime - and a `400`/`er` rejection is not what happens. **HTTP 200 therefore says
+nothing about a token's quality**, and section 79's "accepted at the gate" over-read its own result: a
+degraded token is served the echo exactly like a foreign one.
+
+Both usable handles point the same way:
+
+* section 24 and 54: the discriminator is the **length regime** - trusted mints are 1405-1447 chars,
+  everything instrumented or shimmed lands at 600-1300;
+* d8 currently mints **1253 chars** for build `U5tY...` (939 B) and 2923 for `wlvZkA...`: the first is
+  inside the degraded band, the second is a crash log.
+
+So the next request is only worth making once d8 lands in 1405-1447 chars for a build that matches its own
+page load, and a matching-build control has to be re-established first. That means closing the remaining
+~180 chars, which is the Blink binding layer (section 78), not the request envelope.
