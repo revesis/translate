@@ -148,26 +148,6 @@ class BP(ChromeSession):
             rec["args"] = (r2.get("result") or {}).get("value")
         except Exception as e:  # noqa: BLE001
             rec["error"] = str(e)[:120]
-        if True:
-            focus = {}
-            for label, expr in [
-                ("Y", "String(Y)"),
-                ("L", "String(L)"),
-                ("next_off", "String(F(z,37))"),
-                ("types", "[typeof z,typeof g,typeof V,typeof t,typeof u7,typeof Z,typeof K].join(',')"),
-            ]:
-                try:
-                    rr = await self._raw("Debugger.evaluateOnCallFrame",
-                                         callFrameId=top.get("callFrameId"), expression=expr)
-                    focus[label] = (rr.get("result") or {}).get("value")
-                except Exception as e:  # noqa: BLE001
-                    focus[label] = "ERR " + str(e)[:60]
-            frames = []
-            for f in (p.get("callFrames") or [])[1:4]:
-                loc = f.get("location") or {}
-                frames.append({"fn": f.get("functionName") or "", "line": loc.get("lineNumber"),
-                               "col": loc.get("columnNumber")})
-            rec["focus"] = {"state": focus, "callers": frames}
         self.hits.append(rec)
         try:
             await self._raw("Debugger.resume")

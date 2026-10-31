@@ -3887,3 +3887,36 @@ the expressions are pure reads: `F`, `Z`, `a`, `n`, `q`, `E` all mutate or re-en
 This is the same lesson as section 65 in another register: the instrument has to be passive. The CDP window
 (section 85) stays valid for the values it already produced, but any follow-up must be built on `Debugger`
 stepping and plain reads only.
+
+## 90. Measured: the missing mining evals are worth ~1 char each, not the 464 bytes
+
+Five clean breakpoint runs (count only, no diagnostic expressions - section 89's trap), same build and
+material:
+
+```
+hits 42   token 1417 chars / 1062 B
+hits 64   token 1415 chars / 1060 B
+hits 64   token 1432 chars / 1073 B
+hits 64   token 1428 chars / 1070 B
+hits 64   token 1440 chars / 1079 B
+```
+
+Two things this settles:
+
+* **the mining count is adaptive, not fixed** - the same material mints with 42 or 64 roll-call evals and
+  the token stays in the trusted band either way;
+* **the per-eval cost is about one character**: 22 extra mining evals move the token by ~13-25 chars, i.e.
+  ~1 char each. d8 is missing ~110 evals, which at that rate is ~110 chars = ~82 bytes - a sixth of the
+  464-byte gap at most.
+
+So the truncation is **not** where the difference lives, and chasing the post-`window` probes further would
+have been the wrong path. The 464 bytes are much more likely the tag-132 record itself (section 86: 884 B in
+the browser, 208 B in d8, with d8 writing 212 B more elsewhere) - i.e. *what populates the exception log*,
+not *how many mining steps run*.
+
+Next target, in order:
+
+1. `research/record_map.py` on a fresh `run_one.py` capture (needs a run on the remote: it wants `one.json`
+   with the emission log) - it names, per record, the source field and the instructions that wrote it, which
+   is the only way to say what the 884 B log is made of;
+2. compare that field's content between a browser run and d8, since d8's copy is 208 B.
