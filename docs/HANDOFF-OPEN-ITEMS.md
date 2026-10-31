@@ -54,6 +54,12 @@ item (84); the token gap is the `len16 + U8` record, i.e. the VM's exception log
   as a **tag-132 record** - 2054 B in the Node run. A trusted mint catches nothing and has no tag-132
   record. Section 2b's "three identical 542-byte blocks" are three recorded exceptions.
 
+  **Corrected by section 96:** the record is field **274**, not 468 (468 is only the budget), and in a
+  trusted Chrome mint `V_` **never runs** (0 hits over five runs): tag 132 always exists and carries the
+  *mining transcript* - 263 appends, 900 B of opcode/length/value triplets whose payloads include
+  `CSSMathMin`, `GMT+0900 (Japan `, `Linux x86_64`. The Node/`node:vm` exception text was a shim artifact.
+  So the browser-vs-d8 gap is missing mining *items*, not a missing log.
+
 **What is open (updated, sections 70-83).** The two host bugs that held this line are found and fixed:
 
 * an iframe has a WindowProxy **from creation**, not only after `src`; returning null there made the
@@ -85,17 +91,28 @@ unpatched Chrome one - the section 65 trap). With the same material and the same
 missing. Section 85 adds the instrument to chase them: a CDP breakpoint inside the mining function gives the
 browser's VM state and the name sequence **without perturbing** (five runs, token always 1428-1456 chars).
 
-**Next step, in order.** The question is now narrow: what does the VM put in the exception log *before* it is
-encrypted, and does a trusted mint carry one (sections 91, 95).
+**Next step, in order.** ~~The question is now narrow: what does the VM put in the exception log
+*before* it is encrypted, and does a trusted mint carry one (sections 91, 95).~~ **Answered (section 96):**
+there is nothing to read - `V_` never runs in a trusted mint; the tag-132 record is field 274, the mining
+transcript. What remains is the d8 side of the same measurement.
 
-1. Re-derive the current build's anchor names with `research/record_map.py` on a fresh `run_one.py` capture
-   (`Kk`/`U8` rotate per build - an older build's frame copy does not contain them at all).
-2. Find the collector's append site (`V_`, field 468, whose `[0]` is the byte budget - section 59) and read
-   the **plaintext** there in the frame realm with the CDP breakpoint. `research/probe_u8.py` is the working
-   template: it arms only the frame copy (its source starts with a run of newlines) and ignores hits where the
-   local does not resolve - that is how the page realm's copy announces itself.
-3. With that in hand, decide whether the trusted 884-byte record is a log of the mining probes (expected
-   throws) or something else, and whether the browser's extra ~676 bytes over d8 is worth reproducing at all.
+1. Arm the *same* writer guard (`u==274||u==444||u==77`, derived structurally) on the d8/`node:vm` side and
+   record its field-274 append stream - item for item - against the browser stream (`probe_468.py` prints
+   it: opcode/length/payload triplets). The browser baseline for build `U5tYCxBAtKrhIfdN`: 263 appends,
+   900 B, and the payloads `CSSMathMin`, `GMT+0900 (Japan `, `Linux x86_64`.
+2. When arming any breakpoint in these scripts, ask `Debugger.getPossibleBreakpoints` first: the
+   interpreter carries its own source as a string, so a text offset is usually *data* and Chrome silently
+   snaps the breakpoint up to 35 000 columns away (section 96). `research/probe_anchor.py` lists which
+   script holds a given anchor as code.
+
+**Answered (kept for the record).**
+
+1. ~~Re-derive the current build's anchor names with `research/record_map.py`~~ - `probe_468.py` derives
+   them structurally from the material (`X`, `k`, `C`, `b7`, `J` in build `U5tYCxBAtKrhIfdN`).
+2. ~~Find the collector's append site and read the plaintext there~~ - done; the site is field 274, and it
+   never fires (section 96).
+3. ~~Decide whether the trusted 884-byte record is a log of the mining probes or something else~~ - it is
+   the mining transcript, and the browser's extra ~676 bytes over d8 is the set of mining items d8 skips.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure: section 65's
 `fC is not defined` and section 83's 801 -> 1177 both came from that. Use C++ logging in d8/Chrome, or
@@ -244,6 +261,9 @@ send synthetic tokens on your own. Prefer offline tests against captured tokens.
 | `research/diff_tokens.py` | A/B/A minting, per-mint noise vs content-sensitive bytes |
 | `research/assemble_token.py` | spec -> token (`--fresh` for a new nonce/bulk) |
 | `research/live_test.py` | one live request (`--dry-run`, `--control`, `--control-fresh`, `--control-byte4`) |
+| `research/probe_468.py` | field-274 append stream (writer guard) + the collector, code-only breakpoints |
+| `research/probe_anchor.py` | which script copy holds an anchor as code, not as embedded text |
+| `research/probe_bp.py` | debugger position diagnostic: `searchInContent` vs `getPossibleBreakpoints` |
 
 ## Working rules
 

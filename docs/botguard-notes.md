@@ -4082,3 +4082,69 @@ direction and opens it in another:
 Tooling notes for that next read: the breakpoint must be armed in the *frame* copy (the `\n\n` prefix is the
 reliable discriminator), and the anchor names rotate per build (`Kk`/`U8` do not exist in an older build's
 frame copy - checked), so the expression has to be re-derived from `record_map.py` on the current build.
+
+## 96. Correction: field 468 is the *budget*; the record is field 274, and `V_` never runs in a trusted mint
+
+Three findings, all measured in the current build (`U5tYCxBAtKrhIfdN`, trusted-band tokens of 1408-1431
+chars). They close item 0's next step 2 and overturn the "the length difference is a crash log" line.
+
+**1. A script's text is not its code, so earlier collector breakpoints were armed in data.** The
+interpreter carries its own source as a string - that is how it builds the frame program - so the
+collector's source text sits at columns the engine does not consider code:
+
+```
+Debugger.getPossibleBreakpoints(script 21, line 7, col 26792 +/- 5000)  ->  []
+Debugger.setBreakpoint(location 7:26851)                               ->  actual 7:61710
+```
+
+i.e. 34 859 columns away, in a different function, where `X` is a boolean. The live copy is always on the
+**last line** of the copy (`probe_anchor.py`: script 23 of 5867 lines, code region starts at the line's
+first breakable column). `research/probe_468.py` therefore asks `getPossibleBreakpoints` per occurrence
+and arms only occurrences the engine reports as breakable.
+
+**2. Field 468 is not the payload.** `y=C(J,468)` is only the *byte budget*; the record the serialiser
+emits as tag 132 is field **274**:
+
+```
+h=C(this,274) ... js(a$(h.length,2).concat(h),this,134,132)     the record (tag 132)
+V_ ... js(a$(X.length,2).concat(X),J,274,17)                    the collector appends to 274
+```
+
+So section 95's "U8 is 884 bytes of ciphertext" is field 274's content, and 468's budget got the wrong
+name.
+
+**3. What field 274 actually carries: the mining transcript, not a crash log.** Arming the writer's own
+guard (`u==274||u==444||u==77` inside the append function) in the frame's live copy, one trusted mint
+(1431 chars / 1072 B, 407 hits):
+
+```
+field writes: 274 x263, 471 x65, 306 x21, 134 x13, 464 x9, 444 x5, ...
+field 274: 263 appends, 900 bytes total, in opcode/length/payload triplets
+  110 x 1 byte    opcodes 30, 122, 244, 245, ...
+   54 x 2 bytes   lengths [0,25] [0,10] [0,5] ... and the sentinel [255,255]
+   88 x 4 bytes   4-byte chunks (the keystream/random padding, sections 12-13)
+   payloads: 25 B "23a87Qbooleans tr...", 10 B "CSSMathMin", 30 B "GMT+0900 (Japan ",
+             12 B "Linux x86_64", 185 B binary, plus 32/16/6 B
+```
+
+That is the enumeration stream: probe name, length, value - including the frame realm's real timezone
+and platform strings. (So `navigator.platform`-class data *is* read, inside the eval'd roll-call probes;
+section 73's AST surface could not see it.) 900 B matches the 884-890 B tag-132 record of sections 86/95
+on older loads.
+
+**4. `V_` never executes in a trusted mint.** With the collector armed at its code position in every copy
+that has one (frame program and the 645-byte eval'd fragment), five runs of 1408-1431 chars produced
+**zero** hits. The 2054-byte exception text of section 59 is therefore a shim artifact: Node's realm threw,
+`V_` ran, and appended its `message:stack` text into the same field 274. In a trusted Chrome mint the
+budget in 468 never comes into play.
+
+**Consequences.** The browser-vs-d8 difference (sections 84, 90) is missing *mining items* in field 274,
+not a missing crash log - the comparison to make is d8's field-274 append stream against the browser's
+(same writer guard, `node_mint.mjs` / `d8_mint.js` already reach the field). And the record is plain in the
+field but encoded in the token: the token bytes contain neither "CSSMathMin" nor "Linux x86_64" nor
+"GMT+0900" (searched on the minted blob, offset -1).
+
+Tooling that produced this: `research/probe_468.py` (instrumented arming, code-only occurrences, the
+writer guard, per-hit reads of locals and the VM arena), `research/probe_anchor.py` (which script holds the
+anchor as code), `research/probe_bp.py` (the position diagnostic that exposed the text/code split).
+
