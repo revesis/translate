@@ -37,7 +37,13 @@ def save(arr: list, interp: str, out: str) -> str:
     tag = str(arr[2])[:16]
     open(os.path.join(out, "interp_" + tag + ".js"), "w").write(interp)
     blob = arr[0]
-    raw = base64.b64decode(blob[3:] if isinstance(blob, str) else blob)
+    body = blob[3:] if isinstance(blob, str) else blob
+    if isinstance(body, str):
+        # urlsafe base64 without padding is what the page ships; b64decode needs it padded.
+        body = body + "=" * (-len(body) % 4)
+        raw = base64.urlsafe_b64decode(body)
+    else:
+        raw = bytes(body)
     open(os.path.join(out, "blob_" + tag + ".txt"), "wb").write(raw)
     json.dump({"arr": arr, "interp_sha256": hashlib.sha256(interp.encode()).hexdigest(),
                "blob_len": len(raw), "blob_head": raw[:16].hex()},

@@ -4020,3 +4020,37 @@ So both instrumentation routes on the d8 side are closed: no inspector coverage 
 (section 93), and any interp text patch destroys the phenomenon (section 92). The only environments that can
 see this VM's frame realm are Blink (the trusted browser) and our shim - and the shim is the thing under
 suspicion.
+
+## 94. Decision: the platform for further work is real Blink, not a shim
+
+The browserless line is parked with its findings (sections 70-93). Everything it established stays true and
+useful - the host surface is three expressions (73), the frame program is byte-identical in both realms (70),
+the roll call matches item for item (84), the gap is `len16 + U8`, the exception log (91) - but the shim
+cannot be finished without an observation channel that does not exist (92, 93), and the phenomenon
+disappears the moment the interpreter's text is instrumented.
+
+The sanctioned platform is a **windowless Chrome driven over CDP**, which is what `bgr_sidecar.py` already
+does. Validated from scratch on this machine in one sitting:
+
+```
+python3 research/fetch_build.py --out /tmp/bgbuild_local
+  build wlvZkANqlDPB_YSU   interp 66 398 B   blob 22 581 B   (8 proto fields)
+
+probe_realm.py x3, /usr/bin/google-chrome-stable, unpatched interp
+  1428 chars / 1070 B      1432 chars / 1073 B      ~1440 chars / 1078 B
+  marker d0 00 06 7a 16 4e 5f 5a 16 at offset 5 in all three
+
+bgr_sidecar.py --port 8791 --chrome-port 9601, then POST /sign
+  bgr header token decodes to 0a 14 b8 14 70 d0 00 06 7a 16 4e 5f 5a 16 5f ...  (trusted structure)
+```
+
+Three out of three in the trusted band (1405-1447 chars) and the sidecar's `/sign` returns the same shape, so
+the path is reproducible with nothing but a Chrome binary.
+
+One real bug fixed on the way: `fetch_build.py` fed the page's unpadded urlsafe blob straight to
+`base64.b64decode`, which raised `Incorrect padding` on the current build - it now pads and uses the urlsafe
+decoder.
+
+Why this is the right base for the remaining questions: it is the one environment where the observation is
+non-destructive (section 85's breakpoints held the token at 1428-1456 chars across five runs), so `U8` can
+now be read while it is being written, which is exactly what section 91 said was needed.
