@@ -21,7 +21,18 @@ is spent *as jsdom*; the same question in a `node:vm` realm is the live line - s
 
 ---
 
-## Item 0 - a browserless mint (primary)
+## Item 0 - the token: platform is Blink, browserless line parked (sections 70-94)
+
+**Decision (section 94).** The signer platform is a windowless Chrome driven over CDP - what
+`bgr_sidecar.py` already does. Validated end to end in one sitting: `probe_realm.py` minted 1070 / 1073 /
+1078 B (all inside the trusted 1405-1447-char band) three times out of three with the unpatched interpreter,
+and `bgr_sidecar.py`'s `POST /sign` returned the same token shape. The browserless line (d8 / `node:vm`) is
+kept as a bench and is **not** the product path: its observation channels are closed (sections 92, 93) and
+the phenomenon disappears under any text instrumentation.
+
+**What the browserless work established, and still applies:** the host surface is three expressions (73);
+the generated frame program is byte-identical in both realms (70); the mining roll call matches item for
+item (84); the token gap is the `len16 + U8` record, i.e. the VM's exception log (91).
 
 **What is established (measured, sections 57-61).**
 
