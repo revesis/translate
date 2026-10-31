@@ -4054,3 +4054,31 @@ decoder.
 Why this is the right base for the remaining questions: it is the one environment where the observation is
 non-destructive (section 85's breakpoints held the token at 1428-1456 chars across five runs), so `U8` can
 now be read while it is being written, which is exactly what section 91 said was needed.
+
+## 95. `U8` read live in the browser: 884 bytes of ciphertext, so the log is encrypted before emission
+
+`research/probe_u8.py` arms a CDP breakpoint on the record's own payload expression
+(`Kk(U8.length,2).concat(U8)`) **in the frame copy only** - the frame copy is the script that starts with a
+run of newlines (section 62), and arming in the page's copy of the same code hits first with no `U8` in
+scope (`ReferenceError: U8 is not defined`, which is how the wrong-realm hit announces itself).
+
+Result at the serialiser, one clean mint (token 1428 chars / 1070 B):
+
+```
+paused at script 23, line 2827, col 58893
+U8  object:array  length 884
+text: )<Tw…\x17Çx\x02ihí?¦Å5…   (high entropy, no ASCII runs)
+```
+
+So `U8` is **884 bytes of ciphertext**, matching the tag-132 record length exactly (section 86), and it is
+already encrypted at the point the serialiser sees it. That closes the question section 91 left open in one
+direction and opens it in another:
+
+* the record is not a plaintext crash log at the point of emission - section 59's "message + ':' + stack,
+  encrypted" is correct about the *shape*, and the encryption happens before `U8` exists;
+* therefore the plaintext has to be read one step earlier, in the field the collector appends to
+  (field 468, whose `[0]` is the byte budget - section 59), not at the serialiser.
+
+Tooling notes for that next read: the breakpoint must be armed in the *frame* copy (the `\n\n` prefix is the
+reliable discriminator), and the anchor names rotate per build (`Kk`/`U8` do not exist in an older build's
+frame copy - checked), so the expression has to be re-derived from `record_map.py` on the current build.
