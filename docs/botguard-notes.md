@@ -3954,3 +3954,29 @@ Next step: stop guessing why the walk ends and *watch* it. The mining handler is
 (caller chain in section 89), so a breakpoint on the handler's call site - and stepping from the return of
 the last call - shows the instruction that follows eval 143 and the branch that fails to loop back. That is
 plain `Debugger.stepOver`/`stepInto` on one function, not another hypothesis.
+
+## 92. The d8 side cannot be breakpointed, and under the ops patch both sides collapse to the same run
+
+Two facts to stop re-testing:
+
+1. **d8 has no usable inspector.** `d8.h` declares `--enable-inspector`, but in this build it only sets an
+   option that d8's own test harness consumes (`options.enable_inspector` is read in two places in d8.cc to
+   suppress the default console); there is no listening socket, no `ws://` line, and `d8.inspector` is
+   `undefined`. So the CDP breakpoint instrument (section 85) exists on the Chrome side only.
+2. **With the instruction-loop patch on, Chrome behaves like d8.** Applying section 66's anchor
+   (`X=(M=F(S,(q(376,S,y),5)),a(M,S))` + an ops push) to the interp and running both sides:
+
+```
+d8, patched material:    1177 chars, 847 instructions, pointer ends at bit 78 242
+chrome, same patch:      1177 chars  (section 36's "third regime")
+```
+
+So the divergence is not present in an instrumented run - the observation itself removes it. That is worth
+stating plainly: at this point every remaining instrument (text patch, ops log) destroys the phenomenon,
+and the only non-destructive one (CDP) exists on one side.
+
+What this rules out for the next session: don't re-try d8's inspector, don't re-run the ops comparison, and
+don't expect a breakpoint in d8. The options that remain are heavier: build V8's inspector test harness
+(`inspector-test`) so a REPL can drive the same realms, or accept the current empirical state and attack the
+tag-132 content directly (section 91) by diffing `U8` between a browser run and d8 - which needs a way to
+read `U8` on the d8 side, i.e. the same missing instrument.

@@ -227,7 +227,7 @@ function makeRealm(label) {
     cookie: "",
     referrer: "",
     title: "Google Translate",
-    scripts: [],
+    scripts: { length: 1, item: () => null, 0: undefined },
     body, head, documentElement: html,
     createElement(t) { return makeElement(realm, t); },
     createTextNode(t) { return { nodeType: 3, textContent: String(t) }; },
@@ -247,6 +247,15 @@ function makeRealm(label) {
 
   const t0 = Date.now();
   const perf = { now() { return Date.now() - t0; } };
+  // `length` is the child-frame count, and it changes when an iframe is appended.
+  Object.defineProperty(g, "length", {
+    get() {
+      let n = 0;
+      for (const c of doc.body.children) if (String(c.tagName).toLowerCase() === "iframe") n += 1;
+      return n;
+    },
+  });
+
   const loc = {
     href: doc.URL, protocol: "https:", host: "translate.google.com",
     search: "?sl=auto&tl=zh-CN&op=images", pathname: "/",
@@ -256,6 +265,7 @@ function makeRealm(label) {
   Object.assign(g, {
     window: g, self: g, top: g, parent: g, frames: g,
     document: doc, location: loc, performance: perf,
+    history: { length: 2, state: null, pushState() {}, replaceState() {}, back() {}, forward() {}, go() {} },
     btoa: hostFn(btoaBinary), atob: hostFn(atobBinary),
     setTimeout(fn, ms, ...rest) { shared.timers.push(() => fn(...rest)); return 1; },
     clearTimeout() {},
@@ -285,7 +295,7 @@ function makeRealm(label) {
     getComputedStyle() { return { getPropertyValue() { return ""; } }; },
     matchMedia() { return { matches: false, addListener() {}, removeListener() {} }; },
     innerWidth: 1920, innerHeight: 1040, outerWidth: 1920, outerHeight: 1040,
-    devicePixelRatio: 1, name: "", closed: false, length: 0,
+    devicePixelRatio: 1, name: "", closed: false,
     navigator: {
       userAgent: UA, language: "en-US", languages: ["en-US", "en"],
       platform: "Linux x86_64", webdriver: false,
@@ -398,6 +408,9 @@ function main() {
     head: token ? token.slice(0, 64) : "",
     token: token || "",
     frames: shared.frames.length,
+    ops_page: page.g.__ops ? page.g.__ops.length : 0,
+    ops_frame: shared.frames.length && shared.frames[0].g.__ops ? shared.frames[0].g.__ops.slice(-40) : null,
+    ops_frame_n: shared.frames.length && shared.frames[0].g.__ops ? shared.frames[0].g.__ops.length : 0,
     // fC() install trace (research patch): which field id each handler-table entry landed in.
     ins_page: page.g.__ins ? page.g.__ins.slice(0, 24) : null,
     ins_frame: shared.frames.length ? (shared.frames[0].g.__ins || []).slice(0, 24) : null,
