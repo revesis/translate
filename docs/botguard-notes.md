@@ -3920,3 +3920,37 @@ Next target, in order:
    with the emission log) - it names, per record, the source field and the instructions that wrote it, which
    is the only way to say what the 884 B log is made of;
 2. compare that field's content between a browser run and d8, since d8's copy is 208 B.
+
+## 91. `record_map.py` names the gap: tag 132 is `len16 + U8`, and U8 is the exception log
+
+One `run_one.py` capture on the remote (build `wlvZkANqlDPB_YSU`, emit-only patch, 18 emissions) and
+`record_map.py` resolves the record table:
+
+```
+ tag  target  source                              payload expression
+   6    185   None                                []
+  18    185    414
+  23    185   None                                Kk(l,2).concat(FX(l))
+  99    185     73
+ 117    185   None                                Kk(this.U+1>>1,1)
+ 132    185   None                                Kk(U8.length,2).concat(U8)
+ 231    185   None                                []
+```
+
+So the record that carries the 464-byte difference is **tag 132 = `len16 + U8`**, and `U8` is the field the
+collector appends `message + ":" + stack` to (section 59). This reconciles section 90 with section 86:
+
+* extra **array** mining evals cost ~1 character each (section 90) - they allocate, they do not log;
+* the **erroring** probes cost ~120 bytes each, because each throw appends a message and a stack to `U8`;
+* the browser's `U8` is 884 B and d8's is 208 B, a difference of 676 B for ~5-6 more logged throws - which
+  is the right order of magnitude, and nets to the observed 464 B once d8's 212 extra bytes before the
+  record are subtracted.
+
+So the user-visible difference is exactly "how many environment probes threw before the token was built",
+and d8 stops right before the probes that throw (`2.32831e-10` is inert, but `z8p1.p8='x'`,
+`new Array(-1)`, `(1).toString(0)`, `var z9p3;z9p3.y` all throw).
+
+Next step: stop guessing why the walk ends and *watch* it. The mining handler is called from `Yq`
+(caller chain in section 89), so a breakpoint on the handler's call site - and stepping from the return of
+the last call - shows the instruction that follows eval 143 and the branch that fails to loop back. That is
+plain `Debugger.stepOver`/`stepInto` on one function, not another hypothesis.
