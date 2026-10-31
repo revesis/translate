@@ -85,18 +85,17 @@ unpatched Chrome one - the section 65 trap). With the same material and the same
 missing. Section 85 adds the instrument to chase them: a CDP breakpoint inside the mining function gives the
 browser's VM state and the name sequence **without perturbing** (five runs, token always 1428-1456 chars).
 
-**Next step, in order.**
+**Next step, in order.** The question is now narrow: what does the VM put in the exception log *before* it is
+encrypted, and does a trusted mint carry one (sections 91, 95).
 
-1. Name the 464 missing bytes: run `research/record_map.py` / `align_emits.py` against the two captures
-   (`/root/bg/cmp_chrome/token.bin` 1064 B and `/root/bg/cmp_d8.bin` 600 B, same material and `freq`, both
-   diverging at offset 90) and let the emitter map say which tags each side produced. A from-scratch
-   `tag|len16|payload` walk does **not** parse either token, do not retry it.
-2. Read the same records from the d8 side: the CDP breakpoint instrument (section 85) is Chrome-only, but
-   d8 now runs the same roll call, so the missing records are produced *after* it - break on the serializer's
-   assembly site in Chrome and compare with the d8 equivalent recovered from `[EVALLOG]`.
-3. Only when d8 lands in 1405-1447 chars for a build that matches its own page load: re-establish a
-   **matching-build** control (section 54's shape, not section 80's confounded one), then spend the single
-   live request.
+1. Re-derive the current build's anchor names with `research/record_map.py` on a fresh `run_one.py` capture
+   (`Kk`/`U8` rotate per build - an older build's frame copy does not contain them at all).
+2. Find the collector's append site (`V_`, field 468, whose `[0]` is the byte budget - section 59) and read
+   the **plaintext** there in the frame realm with the CDP breakpoint. `research/probe_u8.py` is the working
+   template: it arms only the frame copy (its source starts with a run of newlines) and ignores hits where the
+   local does not resolve - that is how the page realm's copy announces itself.
+3. With that in hand, decide whether the trusted 884-byte record is a log of the mining probes (expected
+   throws) or something else, and whether the browser's extra ~676 bytes over d8 is worth reproducing at all.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure: section 65's
 `fC is not defined` and section 83's 801 -> 1177 both came from that. Use C++ logging in d8/Chrome, or
