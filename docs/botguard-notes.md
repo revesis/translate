@@ -3980,3 +3980,43 @@ don't expect a breakpoint in d8. The options that remain are heavier: build V8's
 (`inspector-test`) so a REPL can drive the same realms, or accept the current empirical state and attack the
 tag-132 content directly (section 91) by diffing `U8` between a browser run and d8 - which needs a way to
 read `U8` on the d8 side, i.e. the same missing instrument.
+
+## 93. d8's inspector works but cannot see `Realm` contexts - the d8 side stays unbreakpointable
+
+`--enable-inspector` does expose a complete CDP client to the script itself. From `v8/src/d8/d8.cc`:
+
+```
+send(json)                  dispatch a protocol message
+receive(json)               called with every message the inspector emits
+handleInspectorMessage()    called in a loop while paused
+```
+
+and responses arrive **synchronously** inside `send`, so `cdp(method, params)` is a plain
+send-and-scan-the-inbox helper. Wired into `research/d8_mint.js` (`--env inspector`), it gets as far as
+
+```
+Debugger.enable -> {"debuggerId":"5884953242166215352.-2331159038109244114"}
+breakpoint armed at script 3 (23 549 chars)
+0 hits on the mining function
+```
+
+and there it stops, for a reason that is in d8's design, not in the driver: `InspectorClient` calls
+`inspector_->contextCreated(...)` **once**, for the context d8 was launched with, so the inspector's context
+group covers only the main context. Scripts evaluated inside `Realm.create()` contexts - the page realm and,
+fatally, the **frame** realm where the mining runs - never produce `Debugger.scriptParsed`
+(`INSP.scripts` stays empty), and a `Debugger.pause` lands on whatever the main context is running. The one
+breakpoint that did arm landed in a 23.5 KB script that merely *contains* the anchor text.
+
+Two driver bugs worth remembering for any future d8-inspector work:
+
+* a re-entrancy guard around `send` **deadlocks the pause loop** - the pause handler must be able to send
+  `Debugger.resume` from inside the dispatch that paused us;
+* throwing out of `handleInspectorMessage` to "unpause" escapes into the caller's stack (it printed
+  `Error: unpause ... at cdp at main`), so resume and return normally instead.
+
+The default path is unaffected (`--env inspector` is opt-in): 801 chars / 144 evals, unchanged.
+
+So both instrumentation routes on the d8 side are closed: no inspector coverage for the realm that matters
+(section 93), and any interp text patch destroys the phenomenon (section 92). The only environments that can
+see this VM's frame realm are Blink (the trusted browser) and our shim - and the shim is the thing under
+suspicion.

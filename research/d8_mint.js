@@ -177,6 +177,116 @@ function makeElement(realm, tag) {
   return el;
 }
 
+
+// ---------------------------------------------------------------- d8 inspector (CDP) --
+const INSP = { on: false, seq: 0, inbox: [], armed: false, name: null, pauses: 0, pairs: [], busy: false };
+
+function inspInit() {
+  if (typeof send !== "function") {
+    print("[insp] this d8 has no inspector; run with --enable-inspector");
+    return false;
+  }
+  INSP.on = true;
+  INSP.scripts = [];
+  globalThis.receive = (m) => {
+    let msg;
+    try { msg = JSON.parse(m); } catch (e) { return; }
+    INSP.inbox.push(msg);
+    if (!msg.id && msg.method === "Debugger.scriptParsed") {
+      const p = msg.params || {};
+      INSP.scripts.push({ scriptId: p.scriptId, length: p.length || 0, url: p.url || "" });
+    }
+  };
+  globalThis.handleInspectorMessage = () => {
+    const p = INSP.inbox.filter((m) => m.method === "Debugger.paused").pop();
+    if (p) {
+      try { inspOnPause(p.params); } catch (e) { print("[insp] pause handler: " + e); }
+    }
+    INSP.pauses += 1;
+  };
+  return true;
+}
+
+function cdp(method, params) {
+  // No re-entrancy guard: the pause handler *must* be able to send `Debugger.resume` from inside the
+  // dispatch that paused us. (A guard here deadlocks the pause loop - measured.)
+  const id = ++INSP.seq;
+  INSP.inbox.length = 0;
+  send(JSON.stringify({ id: id, method: method, params: params || {} }));
+  for (let i = 0; i < INSP.inbox.length; i++) {
+    if (INSP.inbox[i].id === id) return INSP.inbox[i].result || { error: INSP.inbox[i].error };
+  }
+  return null;
+}
+
+function inspMaybeArm() {
+  if (!INSP.armed || INSP.armed === true) {
+    if (INSP.armed === true) return;
+  }
+  if (!INSP.scripts) return;
+  for (const sc of INSP.scripts) {
+    if (sc.length < 50000 || sc.tried) continue;
+    sc.tried = true;
+    const got = cdp("Debugger.getScriptSource", { scriptId: sc.scriptId });
+    const text = (got && got.scriptSource) || "";
+    const off = text.indexOf("function(w){return eval(w)}");
+    if (off < 0) continue;
+    const inner = off + "function(w){".length;
+    const line = (text.slice(0, inner).match(/\n/g) || []).length;
+    const col = inner - (text.lastIndexOf("\n", inner) + 1);
+    cdp("Debugger.setBreakpoint",
+        { location: { scriptId: sc.scriptId, lineNumber: line, columnNumber: col } });
+    INSP.armed = true;
+    INSP.armInfo = { scriptId: sc.scriptId, len: text.length, line: line, col: col };
+    return;
+  }
+}
+
+function inspEval(frameId, expression) {
+  const r = cdp("Debugger.evaluateOnCallFrame",
+                { callFrameId: frameId, expression: expression, returnByValue: true });
+  return r && r.result ? r.result.value : null;
+}
+
+function inspOnPause(params) {
+  const top = (params.callFrames || [])[0];
+  if (!top) return;
+  const loc = top.location || {};
+  if (!INSP.armed) {
+    // The page copy and the frame copy both contain the anchor; the frame copy is the longer one and
+    // is the realm whose mining the browser performs. Try every frame on the stack, keep the longest.
+    let best = null;
+    const seen = {};
+    for (const f of params.callFrames || []) {
+      const sid = (f.location || {}).scriptId;
+      if (!sid || seen[sid]) continue;
+      seen[sid] = 1;
+      const src = cdp("Debugger.getScriptSource", { scriptId: sid });
+      const text = (src && src.scriptSource) || "";
+      const off = text.indexOf("function(w){return eval(w)}");
+      if (off >= 0 && (!best || text.length > best.len)) best = { sid: sid, text: text, off: off, len: text.length };
+    }
+    if (!best) {
+      INSP.armInfo = "no script with the anchor on the stack";
+      cdp("Debugger.resume");
+      return;
+    }
+    const inner = best.off + "function(w){".length;
+    const line = (best.text.slice(0, inner).match(/\n/g) || []).length;
+    const col = inner - (best.text.lastIndexOf("\n", inner) + 1);
+    cdp("Debugger.setBreakpoint",
+        { location: { scriptId: best.sid, lineNumber: line, columnNumber: col } });
+    INSP.armed = true;
+    INSP.armInfo = { scriptId: best.sid, len: best.len, line: line, col: col };
+    cdp("Debugger.resume");
+    return;
+  }
+  const name = inspEval(top.callFrameId, "String(w)");
+  INSP.name = name;
+  INSP.pairs.push([name, inspEval(top.callFrameId, "String(Y)") + "/" + inspEval(top.callFrameId, "String(L)")]);
+  cdp("Debugger.resume");
+}
+
 const shared = { frames: [], interp: "", timers: [], intervalRuns: 0 };
 const D8_GLOBAL = globalThis;
 
@@ -381,6 +491,10 @@ function main() {
   const freq = freqPath ? read(freqPath) : "";
   shared.interp = interp;
 
+  if (ENV.indexOf("inspector") >= 0 && inspInit()) {
+    const en = cdp("Debugger.enable");
+    print("[insp] Debugger.enable -> " + JSON.stringify(en).slice(0, 120));
+  }
   const page = makeRealm("page");
   Realm.eval(page.r, interp);
   const VM = page.g.ridgeslice;
@@ -393,10 +507,16 @@ function main() {
   try {
     VM.a(arr[0], (...f) => { apiArgs = f; }, true, page.document.body, noop, [[], []],
       undefined, false, [noop, noop, noop, noop, noop]);
-    for (let i = 0; i < 200 && !apiArgs; i++) drain(4);
+    for (let i = 0; i < 200 && !apiArgs; i++) {
+      drain(4);
+      if (INSP.on && !INSP.armed) inspMaybeArm();
+    }
     if (!apiArgs) throw new Error("VM.a never resolved");
     apiArgs[0]((t) => { token = String(t); }, [freq, undefined, undefined, undefined]);
-    for (let i = 0; i < 400 && token === null; i++) drain(4);
+    for (let i = 0; i < 400 && token === null; i++) {
+      drain(4);
+      if (INSP.on && !INSP.armed) inspMaybeArm();
+    }
   } catch (e) {
     failure = String(e && e.stack ? e.stack : e);
   }
@@ -410,6 +530,11 @@ function main() {
     frames: shared.frames.length,
     ops_page: page.g.__ops ? page.g.__ops.length : 0,
     ops_frame: shared.frames.length && shared.frames[0].g.__ops ? shared.frames[0].g.__ops.slice(-40) : null,
+    insp_on: INSP.on,
+    insp_pauses: INSP.pauses,
+    insp_armed: INSP.armed,
+    insp_arm: INSP.armInfo || null,
+    insp_names: INSP.pairs.slice(0, 60),
     ops_frame_n: shared.frames.length && shared.frames[0].g.__ops ? shared.frames[0].g.__ops.length : 0,
     // fC() install trace (research patch): which field id each handler-table entry landed in.
     ins_page: page.g.__ins ? page.g.__ins.slice(0, 24) : null,
