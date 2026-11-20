@@ -34,7 +34,7 @@ READER_ANCHOR = re.compile(
     r"if\(\(?(\w+)=(\w+)\(([^()]*)\),\1\)?>=(\w+)\.(\w+)\)throw\[(\w+),31\];")
 BOOT_ANCHOR = re.compile(
     r"(\w+)\.(\w+)=\w+\([^;]{0,80}?atob\(([^)]*)\)\)+,\1\.(\w+)=\1\.\2\.length"
-    r"(?:<<3|\*8),(\w+)\(([^)]*),\[0,0,0\]\)")
+    r"(?:<<3|\*8),(\w+)\(([^)]*),\[0,0,0\]([^)]*)\)+")
 
 
 def find_reader(s: str) -> dict:
@@ -301,7 +301,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
     if not b:
         raise SystemExit("boot anchor not found")
     seed_call, seed_vm = b.group(5), b.group(1)
-    argl = [a.strip() for a in b.group(6).split(",")]
+    argl = [a.strip() for a in (b.group(6) + "," + b.group(7)).split(",")]
     seed_id = next((a for a in argl if a.isdigit()), "")
     prog_field, vfield = b.group(2), b.group(4)
     if not seed_id:
@@ -333,15 +333,17 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # The reader's tail is `return CALL, VALUE}` in every build seen so far, but the call's
         # shape moves (the pointer field id may be the first or the second argument), so the
         # value is taken as the last top-level comma element instead of by pattern.
-        j = body.rfind("return ")
+        j = body.rfind("return")
         if j < 0 or not body.endswith("}"):
             raise SystemExit("reader return not found")
-        expr = body[j + len("return "):-1].strip()
+        expr = body[j + len("return"):-1].strip()
         parts = split_top(expr)
         if len(parts) < 2:
             raise SystemExit("unexpected reader return: " + expr)
         retvar = parts[-1].strip()
-        ret_old = "return " + expr + "}"
+        # Keep the original spacing: newer builds write `return(expr)` with no space, older ones
+        # `return expr`, and the replacement below must match the text byte for byte.
+        ret_old = "return" + body[j + len("return"):-1] + "}"
         if src.count(ret_old) != 1:
             raise SystemExit("reader return not unique (" + str(src.count(ret_old)) + "): " + ret_old[:80])
         pre = ""
@@ -359,7 +361,7 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         mfd = (re.search(re.escape(r["vm"]) + r"\.(\w+)\.length", win)
                or re.search(r"\)\.(\w+)\)\.length", win))
         fd_name = mfd.group(1) if mfd else ""
-        boot_old = seed_call + "(" + b.group(6) + ",[0,0,0])"
+        boot_old = seed_call + "(" + b.group(6) + ",[0,0,0]" + b.group(7) + ")"
         # optional single-byte mutation of the loaded program, for A/B runs:
         # `window.__mut = N` flips plaintext byte N (the array is decrypted per read, so
         # flipping the stored byte flips what the reader returns).
@@ -400,10 +402,24 @@ def patch(src: str, entry=True, ret=True, boot=True, sweep=False, blockcache=Fal
         # patch every copy. Params are (fieldId, vm, value).
         cop = 0
         k = 0
-        for m in reversed(list(re.finditer(r"switch\(!\((\w+)==(\d+)\u007c\u007c\1==(\d+)\)\)", src))):
-            name_w, fid, id_ptr, id_cat = m.group(1), m.group(1), m.group(2), m.group(3)
+        sites = [(m.group(1), m.group(2), m.group(3))
+                 for m in re.finditer(r"switch\(!\((\w+)==(\d+)\|\1==(\d+)\)\)", src)]
+        if not sites:
+            # The 2026-11-20 build writes fields through an if-chain guard
+            # (`if(id==345||id==128)...id==231||id==110...`) instead of a switch; the same writer
+            # is recognised by shape: three parameters, a `x==N||x==M||x==K` guard and `vm.field[`.
+            for m in re.finditer(r"=function\(([^)]*)\)\{", src):
+                params_w = [x.strip() for x in m.group(1).split(",")]
+                if len(params_w) != 3:
+                    continue
+                wend = brace_end(src, m.end() - 1)
+                wbody = src[m.end():wend]
+                g = re.search(r"\b(\w+)==(\d+)\|\|\1==(\d+)\|\|\1==(\d+)", wbody)
+                if g and re.search(r"\b\w+\.\w+\[", wbody):
+                    sites.append((g.group(1), g.group(2), g.group(3)))
+        for fid, id_ptr, id_cat in reversed(sites):
             fn = None
-            for f in re.finditer(r"([\w$]+)=function\(([^)]*)\)\{", src[:m.start()]):
+            for f in re.finditer(r"([\w$]+)=function\(([^)]*)\)\{", src):
                 params_w = [x.strip() for x in f.group(2).split(",")]
                 if fid in params_w and len(params_w) >= 3:
                     fn = (f, params_w)

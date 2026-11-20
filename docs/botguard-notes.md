@@ -4188,3 +4188,24 @@ returns a different object - so the field store cannot be read that way either.
 Tooling: `research/probe_node274.py` (starts `node --inspect` on `node_mint.mjs --arm-delay`, arms by
 shape, drains pauses), `node_mint.mjs --arm-delay/--btoa-dump`.
 
+## 98. Item 2 is blocked on `bgpatch`: the new build moves four anchors, and the loop is next
+
+`run_one.py`'s full patch fails on the 2026-11-20 build, so `head_map.py` gets no instruction windows
+and `disasm.py --dataflow` is empty (measured: reads 0, writes 0, instructions 0). The failure chain,
+by patching the interpreter text offline:
+
+1. **boot** - `this.bU=Xc(255,5,0,atob(H)),this.I=this.bU.length<<3,Q(this,[0,0,0],17)`: the seed id
+   (17) is `Q`'s *third* argument, not the first, and the call carries a trailing argument.
+   `BOOT_ANCHOR` now tolerates that; `seed_id` is read from the joined argument list.
+2. **reader** - `TQ` ends `return(V=Y,F)(345,f,...),V}`: no space after `return`, so the old
+   `rfind("return ")` missed it. The hunk now rebuilds `ret_old` from the raw text.
+3. **writer** - no `switch` dispatch in this build. The writer is
+   `F=function(J,f,x){if(J==345||J==128)...J==231||J==110||J==297...}`, recognised by shape: three
+   parameters, a `x==N||x==M||x==K` guard, and `vm.field[`. (`bgpatch.py` keeps the old switch path
+   and falls back to the if-chain.)
+4. **loop** - **not adapted**: `instruction loop not found`. This is where the full patch stops.
+
+So `run_one.py` falls back to emit-only (16-23 emissions), which is enough for `align_emits` /
+`record_map` but not for `head_map`'s writer join or `disasm --dataflow`. Item 2 (the head constants'
+provenance) needs the reads/writes/loop hunks; the emit-only path and the trusted mint are unaffected.
+
