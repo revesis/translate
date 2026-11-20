@@ -4234,3 +4234,35 @@ Tooling note: `node_mint.mjs --btoa-dump` now installs `prepareStackTrace` only 
 read and restores it (the section 65 trap), and the iframe shim was aligned with d8 (one WindowProxy
 per element, re-navigated on `src`). Neither changed the token length, which is itself the measurement.
 
+## 100. The Chrome baseline on the new build: field 231 is 898 B, and node's excess is the exception text
+
+`probe_468.py` was taught the rotated writer guard (`J==231||J==110||J==297`; the regex now matches
+the shape and takes the ids from the material) and run against the 2026-11-20 build in real Chrome.
+One clean mint, token **1437 chars / 1077 B**:
+
+```
+field writes: 110 x266, 89 x63, 297 x21, 190 x9, 231 x6, 308 x5, ...
+payload bytes: 231 -> 982, 110 -> 921, 79 -> 215, 190 -> 114, ...
+field 231 (the tag-132 source): 6 appends, 982 B
+  A1[31]  A4[0,0,95,225]  A1[79]  A4[0,0,18,196]  A74[...]  A898[...]
+```
+
+So the tag-132 record is **898 B of six appends** - the same ~900 B mining transcript section 96
+measured on the older build. Field **110** is written 266 times (921 B) but is *not* the tag-132
+source, so it is an internal mining record that does not enter the token. The collector breakpoint
+did not arm in this build (its text shape differs), so "V_ runs" is not re-measured here.
+
+**The gap, quantified.** The node mint is 3019 chars / 2264 B against Chrome's 1437 / 1077: **1187 B
+more**. Since the tag-132 record is the only large variable-length record, that excess is field 231's
+content - i.e. the exception text section 59 first described (Node's realm threw, `V_` appended
+`message:stack`, a trusted mint does not). Node writes field 231 through `g(0,34,f,x,J,14)`, whose
+`TQ(8,J,true)` reaches `m(0,345)` and throws `Cannot read properties of undefined (reading '345')`;
+Chrome's 231 already exists at that point (`f.Y[J]||(f.Y[J]=g(...))` short-circuits), so Chrome never
+takes the throwing path. The fix is therefore in node's field initialisation, not in the host table
+(section 99).
+
+Two smaller facts from the same runs: the iframe fix (one WindowProxy per element) moved node's
+`frames` from 2 to 1, matching d8 and Chrome, but did not change the token length. And node's frame
+realm *does* install its helpers - under this build's names (`a`, `E`, `n`, `q`, `Z`); `fC`/`YU` are
+the old build's names, so the earlier `frame_has` probe was reading stale names, not a missing init.
+

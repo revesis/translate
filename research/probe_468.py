@@ -47,8 +47,10 @@ RE_MSG = re.compile(r"([A-Za-z_$][\w$]*)\.message&&\(\s*([A-Za-z_$][\w$]*)\s*\+=
 RE_BUDGET = re.compile(r"([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*468\s*\)")
 # `U8.length,2).concat(U8)` - a record payload of the tag-132 shape; group 1 = the field local.
 RE_REC = re.compile(r"([A-Za-z_$][\w$]*)\.length\s*,\s*2\s*\)\s*\.concat\(\s*\1\s*\)")
-# The field-append guard `u==274||u==444||u==77`: group 1 = the field-id argument of the writer.
-RE_GUARD = re.compile(r"([A-Za-z_$][\w$]*)==274\|\|\1==444\|\|\1==77")
+# The field-append guard inside the writer function: `J==231||J==110||J==297` in the 2026-11-20
+# build (the older build's `u==274||u==444||u==77` is the same shape with rotated ids). Only the
+# variable and the ids move, so match the shape and let the ids come from the material.
+RE_GUARD = re.compile(r"([A-Za-z_$][\w$]*)==(\d+)\|\|\1==(\d+)\|\|\1==(\d+)")
 
 MINT = r"""(async () => {
   const arr = %s, freq = %s;
@@ -222,7 +224,8 @@ class F468(ChromeSession):
                 {"msg": d["msg"], "acc": d["acc"], "obj": d["obj"]})
         g = RE_GUARD.search(src)
         if g:
-            text = "%s==274||%s==444||%s==77" % (g.group(1), g.group(1), g.group(1))
+            text = "%s==%s||%s==%s||%s==%s" % (g.group(1), g.group(2), g.group(1), g.group(3),
+                                              g.group(1), g.group(4))
             meta["armed_field"] = await self._arm_text(
                 sid, src, text, "fld#%s" % sid, {"field": g.group(1)})
         for var in dict.fromkeys(recs):
