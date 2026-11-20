@@ -47,28 +47,12 @@ let evalSeq = 0;
 // A sloppy bare call of a Node-created function gets Node's global as `this`, not the realm's.
 const NODE_GLOBAL = globalThis;
 const CAPTURED = [];
-// Optional dump of the receiver at `btoa` time. The serializer calls btoa with the VM instance as
-// `this` (probe_serializer.py reaches `vm.hq`/`vm.rc` the same way in Chrome), so this is the
-// non-perturbing way to read the finished fields - including the mining/exception field - after a
-// mint. Off unless `--btoa-dump` is passed.
 const BTOA_DUMP = args.includes("--btoa-dump");
+// The btoa wrapper is installed per realm in `makeRealm` (it needs the realm's `Error` to read the
+// call stack). This helper only normalises the receiver: node's `this` at the btoa call is undefined,
+// and the old receiver dump here crashed on it - the instance now comes from `CallSite.getThis()`.
 function makeBtoa(orig) {
-  return function (s) {
-    if (BTOA_DUMP) {
-      try {
-        const u = this && this.u;
-        const lens = {};
-        if (u) for (const k of Object.keys(u)) lens[k] = Array.isArray(u[k]) ? "A" + u[k].length : typeof u[k];
-        writeFileSync(opt("btoa-out", "/tmp/btoa-this.json"), JSON.stringify({
-          thisKeys: Object.getOwnPropertyNames(this).slice(0, 40),
-          hasU: !!u, uLen: u ? Object.keys(u).length : 0, u: lens, sLen: String(s).length,
-        }));
-      } catch (e) {
-        try { writeFileSync("/tmp/btoa-err.txt", String(e && e.stack ? e.stack : e)); } catch (_) {}
-      }
-    }
-    return orig.apply(this, arguments);
-  };
+  return function (s) { return orig.apply(this, arguments); };
 }
 if (TRACE) {
   process.on("uncaughtException", (e) => log("UNCAUGHT", String(e && e.stack ? e.stack.split("\n").slice(0, 4).join(" | ") : e)));
@@ -342,15 +326,20 @@ function makeRealm(label, shared) {
     measure() {},
   };
 
-  // An iframe in this realm gets a *fresh* realm of its own (that is what a real frame
-  // is), created lazily on `src` assignment and handed to the element as contentWindow.
+  // An iframe in this realm gets ONE realm of its own for its whole life, created lazily on
+  // first use (about:blank) and re-navigated by every `src` assignment. d8 measured that a
+  // second realm here is a frame the VM never asked for (`frames=2` instead of 1), and a browser
+  // gives the element a single WindowProxy from creation (section 77).
   realm.onFrameSrc = (el, src) => {
-    const frame = makeRealm(label + ":frame", shared);
+    if (!el.__frame) {
+      const frame = makeRealm(label + ":frame", shared);
+      shared.frames.push(frame);
+      el.__frame = frame;
+    }
     // A real frame resolves `src` against the document before navigating, so its
     // `location.href` is absolute; the interpreter tests it with /^h/ (http/https).
-    frame.location.href = new URL(src || "", location.href).href;
-    el.contentWindow = frame.g;
-    shared.frames.push(frame);
+    el.__frame.g.location.href = new URL(src || "", location.href).href;
+    el.contentWindow = el.__frame.g;
     const fire = (type) => {
       try { el.dispatch(type, { type, target: el }); } catch (e) { log(label, "frame event threw", String(e)); }
     };
@@ -420,7 +409,49 @@ function makeRealm(label, shared) {
     // btoa/atob stay lenient: every receiver guard tried here (strict, sloppy-in-realm, per-realm)
     // turns the mint into the "E:Illegal invocation" error token, because the interpreter reaches
     // them through paths a browser also rejects but that it expects to succeed. See section 73.
-    btoa: makeBtoa(function (s) { return Buffer.from(String(s), "binary").toString("base64"); }),
+    // Read the VM instance from the btoa call stack. probe_serializer.py does this in Chrome with
+    // `CallSite.getThis()`; node's `this` at the btoa call is undefined (measured), but the V8
+    // CallSite for the VM's own frame still carries its receiver. `prepareStackTrace` is installed
+    // only for the synchronous read and restored immediately, so the VM's own `error.stack` reads
+    // are untouched (changing them is the section 65 trap).
+    btoa: (function () {
+      const rawBtoa = makeBtoa(function (s) { return Buffer.from(String(s), "binary").toString("base64"); });
+      return function (s) {
+        if (BTOA_DUMP) {
+          const orig = g.Error.prepareStackTrace;
+          try {
+            g.Error.prepareStackTrace = (_e, frames) => frames;
+            const frames = new g.Error().stack;
+            const hits = [];
+            const diag = [];
+            for (const f of frames) {
+              let t = null;
+              try { t = f.getThis(); } catch (e) { /* no receiver */ }
+              let keys = null;
+              try { keys = t ? Object.getOwnPropertyNames(t).slice(0, 12) : null; } catch (e) {}
+              diag.push([f.getFunctionName() || "?", typeof t, keys]);
+              if (t && (t.Y || t.u)) hits.push(t);
+            }
+            writeFileSync("/tmp/btoa-frames.json", JSON.stringify(diag));
+            if (hits.length) {
+              const o = hits[0].Y || hits[0].u;
+              const lens = {};
+              for (const k of Object.keys(o)) lens[k] = Array.isArray(o[k]) ? "A" + o[k].length : typeof o[k];
+              writeFileSync(opt("btoa-out", "/tmp/btoa-this.json"), JSON.stringify({
+                hits: hits.length, n: Object.keys(o).length, lens,
+                f231: o[231] != null ? (Array.isArray(o[231]) ? "A" + o[231].length : typeof o[231]) : null,
+                f231head: Array.isArray(o[231]) ? Array.prototype.slice.call(o[231], 0, 80).join(",") : null,
+              }));
+            }
+          } catch (e) {
+            try { writeFileSync("/tmp/btoa-err.txt", String(e && e.stack ? e.stack : e)); } catch (_) {}
+          } finally {
+            g.Error.prepareStackTrace = orig;
+          }
+        }
+        return rawBtoa.apply(this, arguments);
+      };
+    })(),
     atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
     console,

@@ -4209,3 +4209,28 @@ So `run_one.py` falls back to emit-only (16-23 emissions), which is enough for `
 `record_map` but not for `head_map`'s writer join or `disasm --dataflow`. Item 2 (the head constants'
 provenance) needs the reads/writes/loop hunks; the emit-only path and the trusted mint are unaffected.
 
+## 99. The node mint's degradation is structural, not a host-surface gap
+
+Chasing the browserless target (a mint with no browser), two negatives narrow where the difference can
+live.
+
+**1. The host-surface options change nothing.** `node_mint.mjs --env` accepts `win` (the Chrome Window
+surface), `webidl`, `tags`, `style`, `proxy`, `hidden`. Every one of them, alone and in combination,
+mints **exactly 3019 chars** - the same length as the bare shim. So the degraded regime is not caused
+by a missing `navigator`/`trustedTypes`/`requestIdleCallback`-class object: the interpreter's recorded
+path is identical under all of them. This agrees with section 90 (the missing mining evals are worth
+~1/6 of the gap) and points at the VM's own instruction path in a synthetic realm, not at the shim's
+host table.
+
+**2. `CallSite.getThis()` cannot reach the VM instance either.** `probe_serializer.py` reaches
+`vm.hq`/`vm.rc` in Chrome through the call site's receiver. In node the VM calls `btoa` with
+`this === undefined` (section 97), and reading the stack through `Error.prepareStackTrace` gives the
+right ten frames (`cT`, `Xc`, `P.Dr`, ...) but **every `getThis()` is `undefined`** - the VM's frames do
+not bind a receiver. So neither the receiver nor `CallSite` exposes the field store; the field-231
+append stream remains unreadable from inside the node process, and the section 96 comparison cannot be
+made there without a non-node engine.
+
+Tooling note: `node_mint.mjs --btoa-dump` now installs `prepareStackTrace` only for the synchronous
+read and restores it (the section 65 trap), and the iframe shim was aligned with d8 (one WindowProxy
+per element, re-navigated on `src`). Neither changed the token length, which is itself the measurement.
+
