@@ -4303,3 +4303,37 @@ skipped). It still does not arm: `insp_pauses 0`, `insp_armed false`. So the sec
 the current build - d8's inspector does not surface these contexts to the bridge, and the engine logs
 (`[ERRLOG]`/`[ERRSTK]`) remain the only non-perturbing window into the browserless mint.
 
+## 102. `[ERRLOC]`: the six errors mapped to the VM's own short handlers
+
+`research/patch_chromium.py` now adds a second engine hook in `ErrorUtils::MakeGenericError`:
+`Isolate::ComputeLocation` -> `Script::GetLineNumber`/`GetColumnNumber`, printed as
+`[ERRLOC] line=.. col=..` right after `[ERRLOG]`. d8 rebuilt on the build host (`ninja -C out/Rel d8`,
+5 steps). One mint:
+
+```
+[ERRLOG] Cannot read properties of undefined (reading '345')   [ERRLOC] line=0 col=27   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading 'length') [ERRLOC] line=0 col=32   [ERRSTK] Q8
+[ERRLOG] Cannot read properties of undefined (reading '194')   [ERRLOC] line=0 col=29   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading '27')    [ERRLOC] line=0 col=29   [ERRSTK] w
+[ERRLOG] Cannot read properties of undefined (reading '345')   [ERRLOC] line=0 col=29   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading '56')    [ERRLOC] line=0 col=29   [ERRSTK] m
+```
+
+`line=0` means each error sits in a **single-line eval** - the VM's own short handlers, not the 65 KB
+frame copy. `[EVALLOG]` shows those handlers verbatim, e.g.
+
+```
+len=57  0,function(I){Q8(489,345,(I=n(X,g(G,57)),104),I,0,G.J)}
+len=107 0,function(J,f,x,Y,v,T){T.Pf.length>x?YV(v,T,[fh,36],J):(T.Pf.push(T.Y.slice()),T.Y[f]=void 0,Q(T,Y,f))}
+```
+
+So the business logic is now visible: during mining the VM evals tiny handlers that read/write field
+ids (345, 194, 27, 56, 489), and every one of them touches the instance field tables `Y` and `Pf`.
+In Chrome those tables exist (the writer's `f.Y[J]||(...)` short-circuits, section 100); in d8 they are
+`undefined`, so the handler throws and `V_` records it. The interpreter's own initialiser sets
+`x.Y=[]` and `x.Pf=[]` (frame source offset ~40 KB) - the open question is why that initialiser does
+not run to completion in a synthetic realm while it does in Blink.
+
+Next instrument: `[EVALLOG]` only logs 120 head chars, so the col cannot yet be joined to one handler
+uniquely. Printing the script length (or a script id) in `[ERRLOC]` would make the join exact.
+

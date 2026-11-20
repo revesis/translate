@@ -56,6 +56,18 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
   {
     std::unique_ptr<char[]> err_text = msg->ToCString();
     fprintf(stderr, "[ERRLOG] %s\\n", err_text.get());
+    // The throw site's script position, so an error can be mapped back to the generated frame source
+    // dumped by [EVALSRC]. ComputeLocation reads the current exception/pending message; if it has none
+    // (the error object is still being built) it returns false and we print nothing.
+    MessageLocation loc;
+    if (isolate->ComputeLocation(&loc)) {
+      DirectHandle<Script> sc = direct_handle(loc.script());
+      if (!sc.is_null()) {
+        fprintf(stderr, "[ERRLOC] line=%d col=%d\\n",
+                Script::GetLineNumber(sc, loc.start_pos()),
+                Script::GetColumnNumber(sc, loc.start_pos()));
+      }
+    }
     if (getenv("BG_ERRSTK") != nullptr) {
       std::ostringstream bg_ss;
       isolate->PrintCurrentStackTrace(bg_ss);
@@ -67,7 +79,8 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
 
 def ensure_cstdio(text: str) -> str:
     """Add the logging includes once, after the first include line."""
-    need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>")
+    need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>",
+                        '#include "src/objects/script.h"')
             if h not in text]
     if not need:
         return text
