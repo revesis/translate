@@ -4337,3 +4337,34 @@ not run to completion in a synthetic realm while it does in Blink.
 Next instrument: `[EVALLOG]` only logs 120 head chars, so the col cannot yet be joined to one handler
 uniquely. Printing the script length (or a script id) in `[ERRLOC]` would make the join exact.
 
+## 103. The six errors are the VM's field-access helpers: `J.Y[f]` and `T.Pf.length`
+
+`[ERRLOC]` now also prints the source length (`Script::source()->length()`), which joins each hit to
+its `[EVALLOG] len=..` line exactly. One mint:
+
+```
+[ERRLOC] len=173 line=0 col=27   m   -> 0,m=function(J,f,x){if((x=J.Y[f],x)===void 0)throw[fh,30,f];...}
+[ERRLOC] len=107 line=0 col=32   Q8  -> 0,Q8=function(J,f,x,Y,v,T){T.Pf.length>x?YV(...):...}
+[ERRLOC] len=175 line=0 col=29   m   -> 0,m=function(J,f,x){... J.Y[f] ...}
+[ERRLOC] len=205 line=0 col=29   w   -> 0,w=function(J,f,x){... J.Y[f] ...}
+[ERRLOC] len=175 line=0 col=29   m
+[ERRLOC] len=175 line=0 col=29   m
+```
+
+The col lands on the same two expressions every time: `J.Y[f]` (in `m` and `w`) and `T.Pf.length`
+(in `Q8`). These are the interpreter's field-access helpers - the functions the VM evals as tiny
+handlers during mining and calls with the VM instance as `J`/`T`. So the business logic is now
+readable:
+
+* the VM's instance carries its fields in two tables, `Y` (a sparse array by field id) and `Pf`;
+* mining evaluates handlers that read/write field ids (345, 194, 27, 56, 489) through `m`/`w`/`Q8`;
+* in d8/node those tables are `undefined` on the instance being used, so the helper throws and `V_`
+  appends `message:stack` into field 231 - the 1187 B of section 100;
+* in Chrome the tables exist, the writer's `f.Y[J]||(f.Y[J]=g(...))` short-circuits (section 100), and
+  no exception is recorded.
+
+The interpreter's own initialiser sets `x.Y=[]` and `x.Pf=[]` (frame source ~40 KB). The open
+question is unchanged but now sharply scoped: why does that initialiser not reach `Y`/`Pf` on the
+instance the mining handlers receive in a synthetic realm, while it does in Blink? The next read is
+the *callers* of `m`/`w`/`Q8` - which instance they pass, and where that instance was built.
+

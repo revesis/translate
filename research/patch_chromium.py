@@ -63,7 +63,10 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
     if (isolate->ComputeLocation(&loc)) {
       DirectHandle<Script> sc = direct_handle(loc.script());
       if (!sc.is_null()) {
-        fprintf(stderr, "[ERRLOC] line=%d col=%d\\n",
+        // The source length joins this hit to the `[EVALLOG] len=..` line of the same eval.
+        Tagged<UnionOf<String, Undefined>> src_obj = sc->source();
+        int src_len = IsString(src_obj) ? Cast<String>(src_obj)->length() : -1;
+        fprintf(stderr, "[ERRLOC] len=%d line=%d col=%d\\n", src_len,
                 Script::GetLineNumber(sc, loc.start_pos()),
                 Script::GetColumnNumber(sc, loc.start_pos()));
       }
