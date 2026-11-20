@@ -377,6 +377,15 @@ function makeRealm(label) {
     document: doc, location: loc, performance: perf,
     history: { length: 2, state: null, pushState() {}, replaceState() {}, back() {}, forward() {}, go() {} },
     btoa: hostFn(btoaBinary), atob: hostFn(atobBinary),
+    // Chrome exposes Trusted Types and the interpreter's helper installer calls
+    // `trustedTypes.createPolicy(...).createScript/createScriptURL` (frame source: `Iz(47,"gc")`).
+    // A policy that returns its input keeps the same string values a browser produces.
+    trustedTypes: {
+      createPolicy(name, rules) {
+        const f = (s) => s;
+        return { createHTML: f, createScript: f, createScriptURL: f, name };
+      },
+    },
     setTimeout(fn, ms, ...rest) { shared.timers.push(() => fn(...rest)); return 1; },
     clearTimeout() {},
     setInterval(fn, ms, ...rest) {

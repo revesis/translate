@@ -4266,3 +4266,34 @@ Two smaller facts from the same runs: the iframe fix (one WindowProxy per elemen
 realm *does* install its helpers - under this build's names (`a`, `E`, `n`, `q`, `Z`); `fC`/`YU` are
 the old build's names, so the earlier `frame_has` probe was reading stale names, not a missing init.
 
+## 101. A patched d8 on the build host reproduces node's 3019 and names the six swallowed errors
+
+The build host (`192.168.92.26`, 1 TB free, 4 cores) already carries a Chromium 159 checkout with a
+d8 and a chrome built from it, both carrying the `[EVALLOG]`/`[ERRLOG]`/`[EVALSRC]` patch
+(`research/patch_chromium.py`; V8 15.9.40). Running the same material through `d8_mint.js` there:
+
+```
+token_len 3019   (identical to node's 3019; d8 is a bench, not the product path)
+[ERRLOG] Cannot read properties of undefined (reading '345')   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading 'length') [ERRSTK] Q8
+[ERRLOG] Cannot read properties of undefined (reading '194')   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading '27')    [ERRSTK] w
+[ERRLOG] Cannot read properties of undefined (reading '345')   [ERRSTK] m
+[ERRLOG] Cannot read properties of undefined (reading '56')    [ERRSTK] m
+```
+
+These six are the exception text that `V_` appends into field 231 - the 1187 B excess of section 100,
+now named with their throw sites. `m`/`w` read `J.Y[f]` and `Q8` reads `T.Pf.length`: every one is a
+field table (`Y`, `Pf`) that is `undefined` on the instance the VM is using, i.e. the same
+initialisation gap in both browserless engines.
+
+The path is visible in the generated frame source (`[EVALSRC]`): the writer's
+`f.Y[J] || (f.Y[J] = g(0,34,f,x,J,14))` short-circuits in Chrome (231 already holds a value, section
+100) but not in d8, so d8 calls `g(0,34,...)`, whose `TQ(8,J,true)` passes the literal `0` as the VM
+and reaches `m(0,345)` -> `0.Y` -> the TypeError above.
+
+Two negative controls from the same host: adding a `trustedTypes` policy shim to `d8_mint.js` (node's
+shim has one, d8's did not) leaves the token at 3019; and d8's built-in inspector bridge does not arm
+on this build (`insp_pauses 0`) because its anchor `function(w){return eval(w)}` is the old build's
+text - the eval-wrapper anchor needs the same rotation treatment as the writer guard.
+
