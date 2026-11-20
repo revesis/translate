@@ -96,10 +96,13 @@ argument that is not the instance).
 
 1. The 5 bytes above (instrument: field-buffer `Proxy`).
 2. `117`'s counter value (`this.K`) - readable from the instance, not yet correlated with the byte.
-3. ~~The `18` / `132` sources' provenance in runs where they are non-empty.~~ **Answered (section 59):
-   tag 132's source is the VM's exception log** - `message + ":" + stack` per caught error, encrypted,
-   capped by the byte budget in field `468[0]`. A trusted mint catches nothing, so it has no tag-132
-   record; that is the whole difference between the 1075 B and 2114-2169 B regimes.
+3. ~~The `18` / `132` sources' provenance in runs where they are non-empty.~~ **Answered (sections
+   95-97):** the tag-132 record's source is field 274 in the build section 96 measured (field 231 in
+   the 2026-11-20 build) - the *mining transcript*, not an exception log. A trusted mint appends 263
+   times / 900 B of opcode/length/value triplets whose payloads include `CSSMathMin`,
+   `GMT+0900 (Japan ` and `Linux x86_64`; the exception collector `V_` never runs in a trusted mint,
+   so the byte budget in field 468 is not the payload. The record is plain in the field and encrypted
+   in the token.
 4. A pure-offline mint: the head template and the records are now specified, and section 57-61 run the
    VM itself in Node without a browser - the first 90 bytes of that token are a trusted token's. What
    is missing is the program's full instruction sequence in a synthetic realm (section 61).

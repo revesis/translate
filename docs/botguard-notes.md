@@ -4148,3 +4148,43 @@ Tooling that produced this: `research/probe_468.py` (instrumented arming, code-o
 writer guard, per-hit reads of locals and the VM arena), `research/probe_anchor.py` (which script holds the
 anchor as code), `research/probe_bp.py` (the position diagnostic that exposed the text/code split).
 
+## 97. The build format rotated; node's inspector sees `node:vm` contexts, but node's frame copy is dead
+
+Measured on the 2026-11-20 load. Four results, two of them new capabilities and one a hard limit.
+
+**1. `arr[0]` is now plain base64.** 29758 chars, no 3-byte prefix, decoding to 22252 B. The old
+`fetch_build.py` sliced `blob[3:]`, leaving 29757 data chars (1 mod 4) and crashing `b64decode`.
+`decode_blob()` now tries the direct form first and falls back to the old prefix offsets; the material
+fetches again (build `hwFN46BzpU0xcs39`).
+
+**2. The field ids rotated again.** In this build the tag-132 record's source is field **231**
+(`PX(qZ(L.length,2).concat(L),231,this,132)`), the exception collector appends to **110**
+(`ib(72,110,f,qZ(v.length,2).concat(v),17)`), and the writer is `F=function(J,f,x){...}` with the guard
+`J==231||J==110||J==297||...`. Nothing may hard-code the old 274/444/77 - `probe_node274.py` derives
+them by shape (the collector's `X.message&&(Y+=...)`, the append that consumes the accumulator, the
+guard's `x==N||x==M||x==K`).
+
+**3. The trusted path is unchanged.** `probe_realm.py` on the same material mints **1411 chars /
+1057 B** - inside the trusted 1405-1447 band. The product path (real Chrome over CDP) still works.
+
+**4. node's inspector is better than d8's, but the node frame copy does not run under breakpoints.**
+node's inspector reports `node:vm` contexts (a vm-body script arrives as context id 2, not 1), and a
+breakpoint set in such a script hits: `vm-tick.js` line 0 col 31 stopped 3/3 with `n = 1` read through
+`evaluateOnCallFrame`. So the section 93 limit is d8-specific.
+
+Arming the node mint's 68 KB frame copy (script 124) at its collector append, writer guard and
+tag-132 emit - all reported as code by `getPossibleBreakpoints` - produced **zero** hits, while a
+368-byte handler copy (script 155) hit 14 times. The tag-132 emit is mint-mandatory when the record
+exists, so the conclusion is that the node mint does not execute the copy the inspector shows as the
+frame program: the node execution path differs from Chrome's, and the section 96 writer-guard
+measurement cannot be transferred as-is.
+
+**5. The `btoa` receiver is dead in node.** The VM calls `btoa` with `this === undefined` (an
+indirect call), so the receiver route that `probe_serializer.py` uses in Chrome does not work here.
+The VM instance does appear on the btoa call stack (frame `Xc`, own properties include `u` and `Y`), but
+`this` is not stable across separate `evaluateOnCallFrame` calls - a second probe of the same receiver
+returns a different object - so the field store cannot be read that way either.
+
+Tooling: `research/probe_node274.py` (starts `node --inspect` on `node_mint.mjs --arm-delay`, arms by
+shape, drains pauses), `node_mint.mjs --arm-delay/--btoa-dump`.
+

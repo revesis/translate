@@ -94,12 +94,16 @@ browser's VM state and the name sequence **without perturbing** (five runs, toke
 **Next step, in order.** ~~The question is now narrow: what does the VM put in the exception log
 *before* it is encrypted, and does a trusted mint carry one (sections 91, 95).~~ **Answered (section 96):**
 there is nothing to read - `V_` never runs in a trusted mint; the tag-132 record is field 274, the mining
-transcript. What remains is the d8 side of the same measurement.
+transcript. What remains is the browserless side of the same measurement.
 
-1. Arm the *same* writer guard (`u==274||u==444||u==77`, derived structurally) on the d8/`node:vm` side and
-   record its field-274 append stream - item for item - against the browser stream (`probe_468.py` prints
-   it: opcode/length/payload triplets). The browser baseline for build `U5tYCxBAtKrhIfdN`: 263 appends,
-   900 B, and the payloads `CSSMathMin`, `GMT+0900 (Japan `, `Linux x86_64`.
+1. ~~Arm the *same* writer guard on the d8/`node:vm` side~~ - **d8 is gone from this machine (no
+   chromium checkout), and the node substitute is not equivalent (section 97):** node's inspector does
+   see `node:vm` contexts and breakpoints in them do hit, but the 68 KB frame copy the inspector shows
+   (script 124) never executes - its tag-132 emit, writer guard and collector append were all armed and
+   produced zero hits, while a 368-byte handler copy hit 14 times. The browser-vs-node gap therefore
+   cannot be measured by transferring the writer-guard breakpoint; the node execution path has to be
+   found first (or the d8 build restored). `research/probe_node274.py` is the tool, and its `--scan-only`
+   mode lists which copies hold which anchors.
 2. When arming any breakpoint in these scripts, ask `Debugger.getPossibleBreakpoints` first: the
    interpreter carries its own source as a string, so a text offset is usually *data* and Chrome silently
    snaps the breakpoint up to 35 000 columns away (section 96). `research/probe_anchor.py` lists which

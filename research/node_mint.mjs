@@ -31,6 +31,10 @@ const FRAME_DELAY = Number(opt("frame-delay", "1"));
 const ENV = (opt("env", "") || "").split(",").filter(Boolean);
 const TIME_SCALE = Number(opt("time-scale", "1")) || 1;
 const freqPath = opt("freq", new URL("./freq.txt", import.meta.url).pathname);
+// Window (ms) between installing the interpreter and starting the mint, so an external CDP client
+// can arm breakpoints in the frame copies before they run. Section 96's browser measurement needs
+// the same view on the node side, and node's inspector does expose `node:vm` contexts (measured).
+const ARM_DELAY = Number(opt("arm-delay", "0")) || 0;
 
 const material = JSON.parse(readFileSync(materialPath, "utf8"));
 const arr = material.arr;
@@ -43,6 +47,29 @@ let evalSeq = 0;
 // A sloppy bare call of a Node-created function gets Node's global as `this`, not the realm's.
 const NODE_GLOBAL = globalThis;
 const CAPTURED = [];
+// Optional dump of the receiver at `btoa` time. The serializer calls btoa with the VM instance as
+// `this` (probe_serializer.py reaches `vm.hq`/`vm.rc` the same way in Chrome), so this is the
+// non-perturbing way to read the finished fields - including the mining/exception field - after a
+// mint. Off unless `--btoa-dump` is passed.
+const BTOA_DUMP = args.includes("--btoa-dump");
+function makeBtoa(orig) {
+  return function (s) {
+    if (BTOA_DUMP) {
+      try {
+        const u = this && this.u;
+        const lens = {};
+        if (u) for (const k of Object.keys(u)) lens[k] = Array.isArray(u[k]) ? "A" + u[k].length : typeof u[k];
+        writeFileSync(opt("btoa-out", "/tmp/btoa-this.json"), JSON.stringify({
+          thisKeys: Object.getOwnPropertyNames(this).slice(0, 40),
+          hasU: !!u, uLen: u ? Object.keys(u).length : 0, u: lens, sLen: String(s).length,
+        }));
+      } catch (e) {
+        try { writeFileSync("/tmp/btoa-err.txt", String(e && e.stack ? e.stack : e)); } catch (_) {}
+      }
+    }
+    return orig.apply(this, arguments);
+  };
+}
 if (TRACE) {
   process.on("uncaughtException", (e) => log("UNCAUGHT", String(e && e.stack ? e.stack.split("\n").slice(0, 4).join(" | ") : e)));
   process.on("unhandledRejection", (e) => log("REJECTED", String(e)));
@@ -393,7 +420,7 @@ function makeRealm(label, shared) {
     // btoa/atob stay lenient: every receiver guard tried here (strict, sloppy-in-realm, per-realm)
     // turns the mint into the "E:Illegal invocation" error token, because the interpreter reaches
     // them through paths a browser also rejects but that it expects to succeed. See section 73.
-    btoa: (s) => Buffer.from(String(s), "binary").toString("base64"),
+    btoa: makeBtoa(function (s) { return Buffer.from(String(s), "binary").toString("base64"); }),
     atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
     console,
@@ -489,6 +516,7 @@ if (args.includes("--capture-src") && interpSrc.includes("b=A.eval(")) {
 }
 if (TRACE && interpSrc === interp) console.log("[dbg] WARN: boot array anchor not found");
 runInContext(interpSrc, page.ctx, { filename: "interp.js" });
+if (ARM_DELAY > 0) await new Promise((r) => setTimeout(r, ARM_DELAY));
 const VM = page.g.ridgeslice;
 if (!VM || typeof VM.a !== "function") {
   console.log(JSON.stringify({ stage: "install", keys: VM ? Object.keys(VM) : null }));
@@ -514,6 +542,16 @@ try {
     writeFileSync(opt("out", "/tmp/node-token.bin"), Buffer.from(raw + pad, "base64"));
   }
   out.head = token.slice(0, 48);
+  try {
+    const vm = page.g.ridgeslice;
+    out.vm_keys = vm ? Object.keys(vm).slice(0, 40) : null;
+    out.vm_u = vm && vm.u ? Object.keys(vm.u).length : null;
+    if (vm && vm.u) {
+      const lens = {};
+      for (const k of Object.keys(vm.u)) lens[k] = Array.isArray(vm.u[k]) ? "A" + vm.u[k].length : typeof vm.u[k];
+      writeFileSync(opt("vm-out", "/tmp/vm-u.json"), JSON.stringify(lens));
+    }
+  } catch (e) { out.vm_err = String(e); }
   if (TRACE) {
     out.src_count = CAPTURED.length;
     CAPTURED.forEach((src, i) => {
