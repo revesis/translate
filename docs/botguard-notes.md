@@ -4368,3 +4368,30 @@ question is unchanged but now sharply scoped: why does that initialiser not reac
 instance the mining handlers receive in a synthetic realm, while it does in Blink? The next read is
 the *callers* of `m`/`w`/`Q8` - which instance they pass, and where that instance was built.
 
+## 104. `[ERRFRM]`: the full handler -> helper chain, frame by frame
+
+`ErrorUtils::MakeGenericError` now also walks the JS stack (`JavaScriptStackFrameIterator`) under
+`BG_ERRSTK` and prints each frame's function name and script length (`[ERRFRM]`). One mint, first two
+errors:
+
+```
+reading '345' @ m:
+  m(173) <- TQ(342) <- g(1120) <- vo(241) <- <frame 62905> <- Ae(62905) <- k1(62905)
+          <- gG/DK/cT(62905) <- main(25357, d8_mint.js)
+reading 'length' @ Q8:
+  Q8(107) <- <handler 57> <- Ae(514) <- k1(137) <- <frame 62905> <- ... <- main
+```
+
+`62905` is the generated frame copy (`[EVALSRC]`), `25357` is `d8_mint.js`, and the short frames are
+the VM's own evals - e.g. the handler at len 57 is
+`0,function(I){Q8(489,345,(I=n(X,g(G,57)),104),I,0,G.J)}`. So the business logic is a mining state
+machine: `k1 -> Ae -> handler -> Q8/m -> throw`, and the instance handed down (`G.J` in the handler,
+`J`/`T` inside the helpers) is the one whose `Y`/`Pf` are `undefined`.
+
+The chain also shows the two distinct call shapes: the field reader path
+(`vo -> g -> TQ -> m`, the writer's `g(0,34,...)` from section 101) and the mining-handler path
+(`k1 -> Ae -> handler -> Q8`). Both end in the same missing tables.
+
+Next read: where `G.J`/`v` is created. The initialiser `x.Y=[]`/`x.Pf=[]` is in the frame copy at
+~40 KB; the instance the handlers receive is reached through `k1` (len 137) and `Ae` (len 514).
+

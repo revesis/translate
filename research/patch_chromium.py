@@ -75,6 +75,15 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
       std::ostringstream bg_ss;
       isolate->PrintCurrentStackTrace(bg_ss);
       fprintf(stderr, "[ERRSTK] %s\\n", bg_ss.str().c_str());
+      for (JavaScriptStackFrameIterator it(isolate); !it.done(); it.Advance()) {
+        JavaScriptFrame* jf = it.frame();
+        Tagged<Script> sc = jf->script();
+        Tagged<Object> src = sc->source();
+        int slen = IsString(src) ? Cast<String>(src)->length() : -1;
+        Tagged<String> fn = jf->function()->shared()->Name();
+        std::unique_ptr<char[]> fnc = fn->ToCString();
+        fprintf(stderr, "[ERRFRM] fn=%s len=%d\\n", fnc.get(), slen);
+      }
     }
   }
 """
@@ -83,7 +92,7 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
 def ensure_cstdio(text: str) -> str:
     """Add the logging includes once, after the first include line."""
     need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>",
-                        '#include "src/objects/script.h"')
+                        '#include "src/objects/script.h"', '#include "src/execution/frames.h"')
             if h not in text]
     if not need:
         return text
