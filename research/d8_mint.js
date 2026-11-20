@@ -225,19 +225,21 @@ function inspMaybeArm() {
   }
   if (!INSP.scripts) return;
   for (const sc of INSP.scripts) {
-    if (sc.length < 50000 || sc.tried) continue;
+    // The anchor lives in the interpreter itself (67 KB) and in the generated frame copy (65 KB), so
+    // the old `< 50000` filter skipped exactly the scripts that carry it.
+    if (sc.tried || (sc.length || 0) > 200000) continue;
     sc.tried = true;
     const got = cdp("Debugger.getScriptSource", { scriptId: sc.scriptId });
     const text = (got && got.scriptSource) || "";
-    const off = text.indexOf("function(w){return eval(w)}");
-    if (off < 0) continue;
-    const inner = off + "function(w){".length;
+    const wm = /function\((\w+)\)\{return eval\(\1\)\}/.exec(text);
+    if (!wm) continue;
+    const inner = wm.index + ("function(" + wm[1] + "){").length;
     const line = (text.slice(0, inner).match(/\n/g) || []).length;
     const col = inner - (text.lastIndexOf("\n", inner) + 1);
     cdp("Debugger.setBreakpoint",
         { location: { scriptId: sc.scriptId, lineNumber: line, columnNumber: col } });
     INSP.armed = true;
-    INSP.armInfo = { scriptId: sc.scriptId, len: text.length, line: line, col: col };
+    INSP.armInfo = { scriptId: sc.scriptId, len: text.length, line: line, col: col, param: wm[1] };
     return;
   }
 }
@@ -263,15 +265,15 @@ function inspOnPause(params) {
       seen[sid] = 1;
       const src = cdp("Debugger.getScriptSource", { scriptId: sid });
       const text = (src && src.scriptSource) || "";
-      const off = text.indexOf("function(w){return eval(w)}");
-      if (off >= 0 && (!best || text.length > best.len)) best = { sid: sid, text: text, off: off, len: text.length };
+      const wm = /function\((\w+)\)\{return eval\(\1\)\}/.exec(text);
+      if (wm && (!best || text.length > best.len)) best = { sid: sid, text: text, off: wm.index, param: wm[1], len: text.length };
     }
     if (!best) {
       INSP.armInfo = "no script with the anchor on the stack";
       cdp("Debugger.resume");
       return;
     }
-    const inner = best.off + "function(w){".length;
+    const inner = best.off + ("function(" + best.param + "){").length;
     const line = (best.text.slice(0, inner).match(/\n/g) || []).length;
     const col = inner - (best.text.lastIndexOf("\n", inner) + 1);
     cdp("Debugger.setBreakpoint",
@@ -281,7 +283,7 @@ function inspOnPause(params) {
     cdp("Debugger.resume");
     return;
   }
-  const name = inspEval(top.callFrameId, "String(w)");
+  const name = inspEval(top.callFrameId, "String(" + (best.param || "w") + ")");
   INSP.name = name;
   INSP.pairs.push([name, inspEval(top.callFrameId, "String(Y)") + "/" + inspEval(top.callFrameId, "String(L)")]);
   cdp("Debugger.resume");

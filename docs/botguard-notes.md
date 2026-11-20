@@ -4297,3 +4297,9 @@ shim has one, d8's did not) leaves the token at 3019; and d8's built-in inspecto
 on this build (`insp_pauses 0`) because its anchor `function(w){return eval(w)}` is the old build's
 text - the eval-wrapper anchor needs the same rotation treatment as the writer guard.
 
+The anchor was then taught the rotated shape (`function(B){return eval(B)}`, parameter captured) and
+the script filter widened (the anchor lives in the 67 KB interpreter, which the old `< 50000` filter
+skipped). It still does not arm: `insp_pauses 0`, `insp_armed false`. So the section 93 limit holds on
+the current build - d8's inspector does not surface these contexts to the bridge, and the engine logs
+(`[ERRLOG]`/`[ERRSTK]`) remain the only non-perturbing window into the browserless mint.
+
