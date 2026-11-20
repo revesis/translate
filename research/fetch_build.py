@@ -32,21 +32,41 @@ def fetch(url: str = PAGE_URL, ua: str = DEFAULT_UA) -> tuple[list, str]:
     return arr, arr[5][-1]
 
 
+def decode_blob(blob) -> tuple[bytes, int]:
+    """Decode the program blob, tolerating the prefix the page has shipped in both eras.
+
+    Measured 2026-11-20: `arr[0]` is now plain urlsafe base64 (29758 chars, decodes to 22318 B).
+    Earlier loads prefixed it with three non-base64 bytes, hence the old `blob[3:]` slice. Try the
+    direct form first and fall back to the prefix offsets, keeping the first candidate that decodes
+    and whose length is a multiple of 8 (the program is word-aligned).
+    """
+    if not isinstance(blob, str):
+        return bytes(blob), 0
+    raw, used = None, 0
+    for off in (0, 3, 1, 2, 4):
+        body = blob[off:]
+        if not body:
+            continue
+        padded = body + "=" * (-len(body) % 4)
+        try:
+            cand = base64.urlsafe_b64decode(padded)
+        except Exception:  # noqa: BLE001
+            continue
+        if raw is None or (len(cand) % 8 == 0 and len(raw) % 8 != 0):
+            raw, used = cand, off
+    if raw is None:
+        raise ValueError("blob is not base64 in any known prefix layout")
+    return raw, used
+
+
 def save(arr: list, interp: str, out: str) -> str:
     os.makedirs(out, exist_ok=True)
     tag = str(arr[2])[:16]
     open(os.path.join(out, "interp_" + tag + ".js"), "w").write(interp)
-    blob = arr[0]
-    body = blob[3:] if isinstance(blob, str) else blob
-    if isinstance(body, str):
-        # urlsafe base64 without padding is what the page ships; b64decode needs it padded.
-        body = body + "=" * (-len(body) % 4)
-        raw = base64.urlsafe_b64decode(body)
-    else:
-        raw = bytes(body)
+    raw, used = decode_blob(arr[0])
     open(os.path.join(out, "blob_" + tag + ".txt"), "wb").write(raw)
     json.dump({"arr": arr, "interp_sha256": hashlib.sha256(interp.encode()).hexdigest(),
-               "blob_len": len(raw), "blob_head": raw[:16].hex()},
+               "blob_len": len(raw), "blob_head": raw[:16].hex(), "blob_prefix": used},
               open(os.path.join(out, "material.json"), "w"))
     return tag
 
