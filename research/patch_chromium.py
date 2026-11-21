@@ -131,7 +131,8 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
       static const char* kExtra[] = {"A", "j", "tE", "Lo", "TY", "MF", "X", "rB",
                                      "S", "o", "v", "C", "L", "d", "u", "B", "A1",
                                      "EL", "Nw", "oR", "b2", "qw", "IR", "RF", "Mw",
-                                     "lU", "AE", "m", "Wx", "Qd", "h1", "bS", "NF"};
+                                     "lU", "AE", "m", "Wx", "Qd", "h1", "bS", "NF",
+                                     "uS", "tE2", "aR", "n", "N"};
       auto dump_extra = [isolate, &dump_field](DirectHandle<JSObject> o) {
         for (const char* k : kExtra) {
           DirectHandle<Name> key = isolate->factory()->NewStringFromAsciiChecked(k);

@@ -4429,3 +4429,12 @@ So the gap is a single overwritten field, not a skipped initialiser. What can wr
 Next read: the write that replaces the core's self-referential `J` with a Smi. A `J`-write watch at
 engine level, or a per-state read of `J` inside the loop, closes it.
 
+Two negatives that narrow it (`d8obj7.err`, `d8time.err`):
+
+* `J` is not a clock. The whole mint is `WALL=0.13 s` and the core's `uS` (the `timeOrigin` that
+  `P.T` adds to `performance.now()`) is `smi0`, so `T.T()` is ~130 ms while `J` is 171716.
+* `J` is not the live read position. It is written twice only - 159054 at the first error, 171716 at
+  the second - and then stays 171716 while `m` (the `K>>6` block index) keeps advancing
+  (2489 -> 2684 -> 2711 -> 2716 -> 2719 -> 2744). So it is a stale value left by one write, not a
+  counter the interpreter updates.
+

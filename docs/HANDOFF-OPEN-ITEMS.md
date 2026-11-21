@@ -90,7 +90,9 @@ So: name the write that replaces the core's self-referential `J` with a Smi. Can
 measured (`docs/botguard-notes.md` section 105): `ZK` stores `T.J = T.A + Y`; `YV` saves/restores
 `f.J`; `vT` stores `this.J = f` but is reachable only through `x.qw`, which the frame program never
 calls; the loop's `a==42` writes `this.J = G` with `G` = `undefined` (`np=44 na=1`), and `a==71`
-writes `this.J = this` but only after `m(this,231)` succeeds.
+writes `this.J = this` but only after `m(this,231)` succeeds. Two negatives: `J` is written only twice
+(159054, then 171716) and is not a clock (`WALL=0.13 s`, `uS=smi0`) nor the live read position (`m`
+keeps advancing while `J` stays 171716) - so it is one stale write, not a counter.
 
 **Acceptance criterion:** the value and the writing frame at the moment `J` stops being the core's
 self-reference. An engine-side `J`-write watch, or a per-state read of `this.J` inside the loop
