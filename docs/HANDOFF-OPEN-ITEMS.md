@@ -112,8 +112,14 @@ core as the sentinel `ib`/`PX` test with `x.J==x`, and the interpreter then over
 via `x.qw(<pc>)` -> `vT` -> `this.J = <pc>`. The mining handlers read `G.J` expecting the core and get
 the PC - that is the mechanism of all six errors.
 
-**Next:** why Blink recovers (section 106: after the first error its `J` becomes an object that has the
-tables but is not the loop's receiver) while d8 keeps the number.
+**Not a realm difference (section 109):** three more instrumented-Chrome runs show the loop frame at
+`J=smi159054` for *every* error, exactly like d8; the earlier "Blink's `J` becomes an object" runs used
+a lighter instrument and a far less degraded path (~11 loop frames vs ~29000). The later value of `J`
+tracks the degradation level, not the realm.
+
+**Next:** the last write to `J` is invisible - an IC fast-path store to an existing property bypasses
+`Object::SetProperty`, so `[JWRITE]` cannot see it. Catching it means hooking the store IC, not the
+property layer.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure (sections 65, 83).
 The only non-perturbing window is engine-level (the d8 hooks above).

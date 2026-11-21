@@ -110,7 +110,7 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
         }
         fprintf(stderr, " %s=%p", label, reinterpret_cast<void*>(v.address()));
       };
-      auto dump_j = [isolate, &dump_field, kY, kPf](DirectHandle<JSObject> o, DirectHandle<Name> k) {
+      auto dump_j = [isolate, &dump_field, kY, kPf, kI, kB](DirectHandle<JSObject> o, DirectHandle<Name> k) {
         Maybe<bool> own = JSReceiver::HasOwnProperty(
             isolate, direct_handle(Cast<JSReceiver>(*o), isolate), k);
         if (own.IsJust()) fprintf(stderr, " ownJ=%d", own.FromJust() ? 1 : 0);
@@ -133,6 +133,10 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
                   jo.address() == o.address() ? 1 : 0);
           dump_field(jo, kY, "JY");
           dump_field(jo, kPf, "JPf");
+          dump_field(jo, kI, "JI");
+          dump_field(jo, kB, "JbU");
+          DirectHandle<Name> bg_knw = isolate->factory()->NewStringFromAsciiChecked("Nw");
+          dump_field(jo, bg_knw, "JNw");
           return;
         }
         fprintf(stderr, " J=%s", IsString(*v) ? "str" : "other");

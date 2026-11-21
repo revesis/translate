@@ -4542,3 +4542,26 @@ receive the PC. That is the whole mechanism of the six errors.
 Open: why Blink recovers (section 106: after the first error its `J` becomes an object that has the
 tables but is not the loop's receiver) while d8 keeps the number.
 
+## 109. Correction: the later `J` value is not a realm difference
+
+Section 106's "Blink's `J` becomes an object, d8's stays 171716" does not hold up. Three more
+instrumented-Chrome runs (two just now, one with the section-108 build) show the loop frame at
+`J=smi159054` for *every* error - identical to d8. So 3 of 4 recent Blink runs match d8 exactly.
+
+The two earlier Blink runs where `J` became an object were made with a **lighter** instrument, before
+`[EVALSM]` and the `create()` payload scan were added; they also had ~11 loop frames where the heavy
+runs have ~29000, i.e. a far less degraded path. d8 moved too: with the lighter hook set the loop
+wrote 171716, with the heavier one it stays 159054. So the later value of `J` tracks how degraded the
+run is (and the instruction stream), not the realm - another instance of the standing rule that
+instrumentation pushes the VM onto a different branch.
+
+What is robust:
+
+* `uu` sets `x.J = x`; the interpreter overwrites it with the bit position via
+  `x.qw(<pc>) -> vT -> this.J = <pc>`. Both realms, first error `J=smi159054 m=smi2489`.
+* The loop's `a==71` (dispatched on `f$==Xi`) does `G=this.J,this.J=this`; `a==42` does `this.J=G`.
+  `G` is the loop's parameter #30 and `np=44 na=1`, so `G` has a value only if `a==71` ran first -
+  and which branch runs is decided by the instruction tag, i.e. by the data.
+* The last write to `J` is often invisible: an IC fast-path store to an existing property bypasses
+  `Object::SetProperty`, so `[JWRITE]` cannot see it.
+
