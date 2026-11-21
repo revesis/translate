@@ -104,6 +104,10 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
           fprintf(stderr, " %s=smi%lld", label, static_cast<long long>(Cast<Smi>(*v).value()));
           return;
         }
+        if (IsHeapNumber(*v)) {
+          fprintf(stderr, " %s=num%.6f", label, Cast<HeapNumber>(*v)->value());
+          return;
+        }
         fprintf(stderr, " %s=%p", label, reinterpret_cast<void*>(v.address()));
       };
       auto dump_j = [isolate, &dump_field, kY, kPf](DirectHandle<JSObject> o, DirectHandle<Name> k) {
@@ -119,9 +123,14 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
           fprintf(stderr, " J=smi%lld", static_cast<long long>(Cast<Smi>(*v).value()));
           return;
         }
+        if (IsHeapNumber(*v)) {
+          fprintf(stderr, " J=num%.6f", Cast<HeapNumber>(*v)->value());
+          return;
+        }
         if (IsJSObject(*v)) {
           DirectHandle<JSObject> jo = Cast<JSObject>(v);
-          fprintf(stderr, " J=%p", reinterpret_cast<void*>(jo.address()));
+          fprintf(stderr, " J=%p JisRecv=%d", reinterpret_cast<void*>(jo.address()),
+                  jo.address() == o.address() ? 1 : 0);
           dump_field(jo, kY, "JY");
           dump_field(jo, kPf, "JPf");
           return;

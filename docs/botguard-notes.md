@@ -4438,3 +4438,24 @@ Two negatives that narrow it (`d8obj7.err`, `d8time.err`):
   (2489 -> 2684 -> 2711 -> 2716 -> 2719 -> 2744). So it is a stale value left by one write, not a
   counter the interpreter updates.
 
+## 106. Instrumented Blink: the first error is identical to d8, and the hooks themselves degrade
+
+Patched `out/Rel/chrome` with the same hooks and ran a mint through `probe_468.py`, using a wrapper
+(`/root/chrome_instr.sh`) because `bgr_sidecar.ChromeSession` sends chrome's stderr to `DEVNULL` and
+the shipped sidecar must not be edited. Markers land in `/root/chrome_instr.log`.
+
+* The Blink `[EVALSRC]` is **67079** chars and equals `material.arr[5][5]` byte for byte - the frame
+  program rotated again (62422 -> 67079); the saved material is current. `uu`'s condition and `ZK`'s
+  RHS were re-verified against the 67079 copy: `x.J === x` still holds, `ZK` still stores `T.A + Y`.
+* First error (`Cannot read properties of undefined (reading '345')`, `m` len 173 col 27): the loop
+  frame reads `ownJ=1 J=smi159054 m=smi2489` - **identical to d8**. The Smi `J` is therefore not a
+  synthetic-realm artefact; both realms reach the same deterministic value from the same material.
+* Later errors in Blink: `J` is an object with `JY=arr512 JPf=arr0` but `JisRecv=0` - not the loop's
+  receiver. d8 instead holds `J=smi171716`. The realms diverge after the first error.
+* Caveat: the instrumented chrome degrades on its own - 112 `[ERRFRM]` lines, nine distinct messages
+  (`Illegal invocation`, `Function.prototype.toString requires that 'this' be a Function`,
+  `Invalid or unexpected token`, `z8p1 is not defined`, `Invalid array length`, ...). This is not the
+  trusted path; the trusted `G.J === G` reading still comes from the uninstrumented CDP probe.
+* `Lo`/`TY`/`uS` are HeapNumbers in Blink (epoch ms; `uS` = `timeOrigin`) and Smis in d8, so `P.T()`
+  returns `uS + performance.now()` (a number) in Blink and `0 + now` in d8.
+

@@ -74,6 +74,11 @@ read.
 * **`ZK` writes a number into `J`**: its assignment RHS is `T.A + Y` (`research/probe_zk_rhs.js`).
 * **The interpreter loop is invoked with one argument** (`np=44 na=1`), so its `G` parameter is
   `undefined`; `a==71`'s `this.J=this` is gated behind `m(this,231)`.
+* **Instrumented Blink reaches the same first error as d8** (section 106): patched `out/Rel/chrome`,
+  first error `ownJ=1 J=smi159054 m=smi2489` - identical. So the Smi `J` is deterministic, not a
+  synthetic-realm artefact. Caveat: the instrumented chrome degrades on its own (112 `[ERRFRM]` lines,
+  nine distinct messages), so it is not a trusted baseline. The frame program rotated to **67079**
+  chars (= `material.arr[5][5]`, byte-identical to Blink's `[EVALSRC]`).
 * **Negative controls**: `node_mint --env win|webidl|tags|style|proxy|hidden` all mint exactly 3019
   (host-surface options change nothing); a `trustedTypes` shim in d8 changes nothing; d8's inspector
   bridge does not arm on this build (`insp_pauses 0`).
