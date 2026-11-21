@@ -4395,3 +4395,37 @@ The chain also shows the two distinct call shapes: the field reader path
 Next read: where `G.J`/`v` is created. The initialiser `x.Y=[]`/`x.Pf=[]` is in the frame copy at
 ~40 KB; the instance the handlers receive is reached through `k1` (len 137) and `Ae` (len 514).
 
+## 105. The tables exist: the handlers are handed `G.J`, and in d8 `G.J` is a Smi
+
+Section 104's closing inference ("the instance whose `Y`/`Pf` are `undefined`") is wrong. Three
+measurements, all read-only:
+
+* **The initialiser runs.** `uu`'s second statement is the `if` whose condition carries `x.J=x`
+  (frame copy offset 35999-36316). Evaluating that condition in node with stubs
+  (`research/probe_uu_condition.js`) leaves `x.Y`, `x.Pf`, `x.bU`, `x.IR`, `x.RF`, `x.Mw` assigned and
+  `x.J === x` **true**. So the branch is not skipped in a synthetic realm.
+* **The live core has the tables.** `[ERRFRM]` now dumps the receiver's fields (`d8obj6.err`): the
+  interpreter loop's `this` has `Y=arr512`, `Pf=arr0`, `bU=arr22216`, `I=smi177728` (= `bU.length<<3`),
+  and `Nw=arr5`. `x.Nw=K` is the only `.Nw` in the whole program, so this object *is* `uu`'s `x`.
+  `ownJ=1`: `J` is an own property of that same object.
+* **The object the helpers get is `G.J`.** d8: `G.J` is a Smi - `159054` at the first error, `171716`
+  from the second on. Chrome (`research/probe_j.py`, armed at the 57-byte handler): `G.J === G` and
+  `G.J.bU` = 22216. So `m(J,f)` / `Q8(...,T)` are reading a number's `.Y` / `.Pf`, not a missing
+  instance's.
+
+So the gap is a single overwritten field, not a skipped initialiser. What can write it:
+
+* `uu` sets `x.J = x` (measured above).
+* `ZK` stores `T.J = T.A + Y` - a **number**. Verified by evaluating the extracted RHS
+  (`research/probe_zk_rhs.js`): with `T.A=1`, `Y=1` it yields `2`. `ZK(I,false,5,1,true,G)` in a
+  mining handler passes `T = G`, i.e. the core.
+* `YV` does `M=f.J, f.J=f; ... finally f.J=M` (save/restore, so it preserves).
+* `vT` does `this.J = f`, reachable only through `x.qw`; `qw` is defined and compared
+  (`Z==G.qw`) but never called in the frame program.
+* The interpreter loop: `a==42` is `this.J=G` and `a==71` is `G=this.J,this.J=this`. The loop frame
+  reports `np=44 na=1`, so it is invoked with one argument and its `G` parameter is `undefined`;
+  `a==71` also evaluates `m(this,231)` *before* the restore, so in the degraded regime it throws first.
+
+Next read: the write that replaces the core's self-referential `J` with a Smi. A `J`-write watch at
+engine level, or a per-state read of `J` inside the loop, closes it.
+

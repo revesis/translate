@@ -75,6 +75,69 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
       std::ostringstream bg_ss;
       isolate->PrintCurrentStackTrace(bg_ss);
       fprintf(stderr, "[ERRSTK] %s\\n", bg_ss.str().c_str());
+      // The VM keeps its field tables (`Y`, `Pf`) on an object that moves between frames: the mining
+      // handlers receive it as a free variable, not as a receiver. Dump the receiver of every frame
+      // and, for the wide interpreter loop, its parameters, so the object graph can be read offline.
+      DirectHandle<Name> kY = isolate->factory()->NewStringFromAsciiChecked("Y");
+      DirectHandle<Name> kPf = isolate->factory()->NewStringFromAsciiChecked("Pf");
+      DirectHandle<Name> kJ = isolate->factory()->NewStringFromAsciiChecked("J");
+      DirectHandle<Name> kB = isolate->factory()->NewStringFromAsciiChecked("bU");
+      DirectHandle<Name> kI = isolate->factory()->NewStringFromAsciiChecked("I");
+      auto dump_field = [isolate](DirectHandle<JSObject> o, DirectHandle<Name> k,
+                                  const char* label) {
+        MaybeHandle<Object> mv = Object::GetProperty(isolate, o, k);
+        DirectHandle<Object> v;
+        if (!mv.ToHandle(&v)) { fprintf(stderr, " %s=?", label); return; }
+        if (IsUndefined(*v)) { fprintf(stderr, " %s=undef", label); return; }
+        if (IsNull(*v)) { fprintf(stderr, " %s=null", label); return; }
+        if (IsJSArray(*v)) {
+          DirectHandle<JSArray> a = Cast<JSArray>(v);
+          Tagged<Number> alen = a->length();
+          if (IsSmi(alen)) {
+            fprintf(stderr, " %s=arr%lld", label, static_cast<long long>(Cast<Smi>(alen).value()));
+          } else {
+            fprintf(stderr, " %s=arr?", label);
+          }
+          return;
+        }
+        if (IsSmi(*v)) {
+          fprintf(stderr, " %s=smi%lld", label, static_cast<long long>(Cast<Smi>(*v).value()));
+          return;
+        }
+        fprintf(stderr, " %s=%p", label, reinterpret_cast<void*>(v.address()));
+      };
+      auto dump_j = [isolate, &dump_field, kY, kPf](DirectHandle<JSObject> o, DirectHandle<Name> k) {
+        Maybe<bool> own = JSReceiver::HasOwnProperty(
+            isolate, direct_handle(Cast<JSReceiver>(*o), isolate), k);
+        if (own.IsJust()) fprintf(stderr, " ownJ=%d", own.FromJust() ? 1 : 0);
+        MaybeHandle<Object> mv = Object::GetProperty(isolate, o, k);
+        DirectHandle<Object> v;
+        if (!mv.ToHandle(&v)) { fprintf(stderr, " J=?"); return; }
+        if (IsUndefined(*v)) { fprintf(stderr, " J=undef"); return; }
+        if (IsNull(*v)) { fprintf(stderr, " J=null"); return; }
+        if (IsSmi(*v)) {
+          fprintf(stderr, " J=smi%lld", static_cast<long long>(Cast<Smi>(*v).value()));
+          return;
+        }
+        if (IsJSObject(*v)) {
+          DirectHandle<JSObject> jo = Cast<JSObject>(v);
+          fprintf(stderr, " J=%p", reinterpret_cast<void*>(jo.address()));
+          dump_field(jo, kY, "JY");
+          dump_field(jo, kPf, "JPf");
+          return;
+        }
+        fprintf(stderr, " J=%s", IsString(*v) ? "str" : "other");
+      };
+      static const char* kExtra[] = {"A", "j", "tE", "Lo", "TY", "MF", "X", "rB",
+                                     "S", "o", "v", "C", "L", "d", "u", "B", "A1",
+                                     "EL", "Nw", "oR", "b2", "qw", "IR", "RF", "Mw",
+                                     "lU", "AE", "m", "Wx", "Qd", "h1", "bS", "NF"};
+      auto dump_extra = [isolate, &dump_field](DirectHandle<JSObject> o) {
+        for (const char* k : kExtra) {
+          DirectHandle<Name> key = isolate->factory()->NewStringFromAsciiChecked(k);
+          dump_field(o, key, k);
+        }
+      };
       for (JavaScriptStackFrameIterator it(isolate); !it.done(); it.Advance()) {
         JavaScriptFrame* jf = it.frame();
         Tagged<Script> sc = jf->script();
@@ -82,7 +145,49 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
         int slen = IsString(src) ? Cast<String>(src)->length() : -1;
         Tagged<String> fn = jf->function()->shared()->Name();
         std::unique_ptr<char[]> fnc = fn->ToCString();
-        fprintf(stderr, "[ERRFRM] fn=%s len=%d\\n", fnc.get(), slen);
+        fprintf(stderr, "[ERRFRM] fn=%s len=%d", fnc.get(), slen);
+        Tagged<Object> recv = jf->receiver();
+        fprintf(stderr, " recv=%p", reinterpret_cast<void*>(recv.ptr()));
+        uint32_t np = jf->ComputeParametersCount();
+        uint32_t na = jf->GetActualArgumentCount();
+        fprintf(stderr, " np=%u na=%u\\n", np, na);
+        if (IsJSObject(recv)) {
+          DirectHandle<JSObject> ro = direct_handle(Cast<JSObject>(recv), isolate);
+          fprintf(stderr, "   recvobj:");
+          dump_field(ro, kY, "Y");
+          dump_field(ro, kPf, "Pf");
+          dump_field(ro, kB, "bU");
+          dump_field(ro, kI, "I");
+          dump_j(ro, kJ);
+          dump_extra(ro);
+          fprintf(stderr, "\\n");
+        }
+        if (np > 20 || (slen > 0 && slen < 1000 && np > 0)) {
+          for (uint32_t i = 0; i < np; i++) {
+            Tagged<Object> p = jf->GetParameter(static_cast<int>(i));
+            fprintf(stderr, "   arg[%u]=%p", i, reinterpret_cast<void*>(p.ptr()));
+            if (IsJSObject(p)) {
+              DirectHandle<JSObject> po = direct_handle(Cast<JSObject>(p), isolate);
+              dump_field(po, kY, "Y");
+              dump_field(po, kPf, "Pf");
+              dump_field(po, kB, "bU");
+              dump_field(po, kI, "I");
+              dump_j(po, kJ);
+              dump_extra(po);
+            } else {
+              if (IsSmi(p)) {
+                fprintf(stderr, " smi%lld", static_cast<long long>(Cast<Smi>(p).value()));
+              } else if (IsString(p)) {
+                fprintf(stderr, " str");
+              } else if (IsUndefined(p)) {
+                fprintf(stderr, " undef");
+              } else {
+                fprintf(stderr, " other");
+              }
+            }
+            fprintf(stderr, "\\n");
+          }
+        }
       }
     }
   }
@@ -92,7 +197,9 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
 def ensure_cstdio(text: str) -> str:
     """Add the logging includes once, after the first include line."""
     need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>",
-                        '#include "src/objects/script.h"', '#include "src/execution/frames.h"')
+                        '#include "src/objects/script.h"', '#include "src/execution/frames.h"',
+                        '#include "src/objects/objects.h"', '#include "src/objects/js-objects.h"',
+                        '#include "src/objects/name.h"', '#include "src/objects/js-array.h"')
             if h not in text]
     if not need:
         return text

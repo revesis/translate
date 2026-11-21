@@ -17,9 +17,11 @@ the degraded regime.
   trusted mint records no exception; the browserless engines throw six times and `V_` writes each
   `message:stack` there.
 
-**Root cause, sharply scoped (sections 100-104).** The VM instance carries its fields in two tables,
-`Y` (sparse array by field id) and `Pf`. In a synthetic realm they are `undefined` on the instance the
-mining handlers receive; in Blink they are initialised. All six errors are field helpers reading them:
+**Root cause, sharply scoped (sections 100-105).** The VM core object carries its fields in two tables,
+`Y` (sparse array by field id) and `Pf`. They **are** created in a synthetic realm - section 105
+falsifies the earlier "undefined on the instance" reading: the live core has `Y=arr512`, `Pf=arr0`.
+What differs is `J`: the mining handlers are handed `G.J`, and in d8 `G.J` is an own Smi (159054, then
+171716) where Blink has `G.J === G`. All six errors are field helpers reading a Smi's tables:
 
 ```
 [ERRLOC] len=173 col=27  m  -> m=function(J,f,x){if((x=J.Y[f],...)...)     reading '345'/'194'/'56'
@@ -27,9 +29,11 @@ mining handlers receive; in Blink they are initialised. All six errors are field
 [ERRLOC] len=107 col=32  Q8 -> Q8=function(...){T.Pf.length>x?...}          reading 'length'
 ```
 
-The instance is built by `new bW` in the generated frame source (~11865); its initialiser sets
-`x.Y=[]` / `x.Pf=[]` (~40 KB). The generated frame program is **byte-identical in both realms**
-(section 70), so the difference is which branch of that initialiser runs. That is the next read.
+The core object is `uu`'s `x` (the interpreter loop's `this`; it carries `Nw`, the one property only
+`uu` writes). `uu` sets `x.Y=[]` / `x.Pf=[]` / `x.bU=[]` / `x.J=x` at frame offset ~35 KB, and that runs
+in a synthetic realm too (section 105). The generated frame program is **byte-identical in both realms**
+(section 70), so the difference is not the initialiser - it is the later write to `J`. That is the next
+read.
 
 ## Machines and tools (new since the old handoff)
 
@@ -39,7 +43,8 @@ The instance is built by `new bW` in the generated frame source (~11865); its in
 * `research/patch_chromium.py` applies the engine hooks, now five: `[EVALLOG]` (every eval: len+head),
   `[EVALSRC]` (full source of >50 KB evals = the frame copy), `[ERRLOG]` (every engine error),
   `[ERRLOC]` (`Isolate::ComputeLocation` -> source len + line/col), `[ERRFRM]` (per-frame function name
-  + script length, under `BG_ERRSTK`).
+  + script length + `np`/`na` + a field dump of the receiver and of every parameter: `Y`/`Pf`/`bU`/`I`,
+  `J` with an own-property flag, and ~34 more core fields, under `BG_ERRSTK`).
 * Rebuild after editing the patch: `cd ~/chromium/src/v8 && git checkout -- src/execution/messages.cc`
   (only that file; the `[EVALLOG]`/`[EVALSRC]` hooks live in `compiler.cc` and are stable), then
   `python3 ~/patch_chromium.py --src ~/chromium/src` and `ninja -C out/Rel d8 -j4` (~2-4 min, 5 steps).
@@ -62,21 +67,36 @@ The instance is built by `new bW` in the generated frame source (~11865); its in
   frame. So the node side cannot be measured from inside; the host's d8 is the instrument.
 * **The six errors' full chains** (`[ERRFRM]`):
   `main(25357) -> frame(62905) -> k1(137) -> Ae(514) -> handler(57) -> g(1120) -> TQ(342) -> m(173)`.
-  The handler is `function(G,I,Z){Z=g(G,(I=g(G,26),57)),F(Z,b,""+n(G,I))}`; `G.J` is a self-reference
-  (`vT` does `this.J=f`, `ib` tests `x.J==x`). So the helper reads the *instance's* tables.
+  The handler is `function(G,I,Z){Z=g(G,(I=g(G,26),57)),F(Z,b,""+n(G,I))}`; it hands `G.J` to the
+  helpers. In Blink `G.J` is the core's self-reference; in d8 it is a Smi (section 105).
+* **`uu`'s initialiser is not skipped** (section 105): evaluating its second statement in node leaves
+  `x.Y`/`x.Pf`/`x.bU` set and `x.J === x` true, and the d8 core has `Y=arr512`, `Pf=arr0`, `Nw=arr5`.
+* **`ZK` writes a number into `J`**: its assignment RHS is `T.A + Y` (`research/probe_zk_rhs.js`).
+* **The interpreter loop is invoked with one argument** (`np=44 na=1`), so its `G` parameter is
+  `undefined`; `a==71`'s `this.J=this` is gated behind `m(this,231)`.
 * **Negative controls**: `node_mint --env win|webidl|tags|style|proxy|hidden` all mint exactly 3019
   (host-surface options change nothing); a `trustedTypes` shim in d8 changes nothing; d8's inspector
   bridge does not arm on this build (`insp_pauses 0`).
 
-## Item 0 - active: why are `Y`/`Pf` undefined on the instance?
+## Item 0 - active: what writes the Smi into the core's own `J`?
 
-Read the `bW` constructor (frame source ~11865) and the initialiser at ~40 KB. The frame source is the
-`[EVALSRC] ... [EVALSRC-END]` block of the d8 stderr - save it and read offline. Compare with the
-identical Chrome frame program (section 70) to find the branch that sets `Y`/`Pf`. The handler reaches
-the instance through `k1` (len 137) -> `Ae` (len 514); both are in `[EVALLOG]`.
+The old question ("why are `Y`/`Pf` undefined") is answered: they are not (section 105). The live
+core - the interpreter loop's `this`, carrying `Nw`, the only property `uu` writes - has `Y=arr512`,
+`Pf=arr0`, `bU=arr22216` in d8. `uu` really does set `x.J = x`. The handlers fail because they are
+handed `G.J`, and in d8 `G.J` is an own Smi (`ownJ=1`): 159054 at the first error, 171716 from the
+second on. In Blink `G.J === G` and `G.J.bU` = 22216.
 
-**Acceptance criterion:** name the condition that skips (or defers) `x.Y=[]` / `x.Pf=[]` in a synthetic
-realm. Everything else about the gap follows from that.
+So: name the write that replaces the core's self-referential `J` with a Smi. Candidates already
+measured (`docs/botguard-notes.md` section 105): `ZK` stores `T.J = T.A + Y`; `YV` saves/restores
+`f.J`; `vT` stores `this.J = f` but is reachable only through `x.qw`, which the frame program never
+calls; the loop's `a==42` writes `this.J = G` with `G` = `undefined` (`np=44 na=1`), and `a==71`
+writes `this.J = this` but only after `m(this,231)` succeeds.
+
+**Acceptance criterion:** the value and the writing frame at the moment `J` stops being the core's
+self-reference. An engine-side `J`-write watch, or a per-state read of `this.J` inside the loop
+(`xj#`/`j42#`/`tj#` arms in `research/probe_j.py` are the Chrome-side starting point), closes it.
+Note `x.J=x` sits in `uu`'s second statement at frame offset 35999-36316; `research/probe_uu_condition.js`
+evaluates that condition in isolation.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure (sections 65, 83).
 The only non-perturbing window is engine-level (the d8 hooks above).
@@ -116,7 +136,11 @@ need explicit user approval; prefer offline tests.
 | --- | --- |
 | `research/probe_node274.py` | start `node --inspect` on `node_mint.mjs --arm-delay`, arm by shape, drain pauses |
 | `research/probe_468.py` | Chrome: writer-guard append stream (ids derived), collector, code-only breakpoints |
+| `research/probe_j.py` | Chrome: same, plus arms that read the core's `J` (`xj#`/`j42#`/`tj#`/`fld#`) |
 | `research/patch_chromium.py` | the d8 engine hooks, incl. `[ERRLOC]`/`[ERRFRM]`; run on the build host |
+| `research/probe_uu_condition.js` | node: evaluates `uu`'s 2nd statement; shows `x.Y`/`x.Pf`/`x.J=x` all run |
+| `research/probe_zk_rhs.js` | node: evaluates `ZK`'s `T.J=` RHS; shows it stores `T.A+Y` |
+| `research/probe_uu_args.js` | node: `uu` argument-order probe (needs `x1`/`qa` stubs) |
 | `node_mint.mjs --arm-delay/--btoa-dump` | arm window / stack read at btoa (section 97: both negative) |
 
 ## Working rules
