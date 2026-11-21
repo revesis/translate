@@ -4493,3 +4493,13 @@ Two conclusions that change item 0:
 Caveat: an IC fast-path store to an existing property can bypass `Object::SetProperty` entirely, so the
 hook can miss individual writes; the 8 above are the ones that went through the slow path.
 
+The same hook in a patched `out/Rel/chrome` confirms it in Blink (`chrome_jw.log`): 5 writes before the
+probe's mint hung, the last one `val=smi159054` with the identical shape
+`bW.vT <- length.x.qw <- eval <- Ae <- k1`. The loop writes never appear in Blink - consistent with
+section 106's `J` becoming an object there by a store that bypasses the hook (fast path).
+
+Also measured: the generated program's *length* is not stable. `Array(Math.random()*7824|0).join("\n")`
+is prepended to the frame source, so the same program shows up as 62906 / 63326 / 67079 / 68306 chars
+depending on the load; the columns are identical, only the line numbers shift. Compare programs by
+content after stripping the leading newlines, never by length.
+
