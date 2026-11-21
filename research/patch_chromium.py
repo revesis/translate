@@ -204,12 +204,72 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
 """
 
 
+# Writes to the VM core's `J`. `Object::SetProperty(LookupIterator*, ...)` is the common entry for every
+# named store (the store ICs call it straight from ic/ic.cc:2295/2395/4641), so `x.J = ...` and
+# `this.J = ...` land here whether the property already exists or is being added. The filter is the
+# one-character name "J" plus a "Y" array on the receiver - i.e. exactly the VM core - so the hot path
+# stays quiet. Prints the value and the JS stack of the writer.
+JWRITE_ANCHOR = """Maybe<bool> Object::SetProperty(LookupIterator* it, DirectHandle<Object> value,
+                                StoreOrigin store_origin,
+                                Maybe<ShouldThrow> should_throw) {
+  if (it->IsFound()) {
+"""
+
+JWRITE_CODE = """  // botguard research: log stores of the name "J" on an object carrying a "Y" array (the VM core),
+  // with the writer's JS stack. This is what puts a non-self value into the core's J.
+  {
+    static const bool bg_jwrite = getenv("BG_JWRITE") != nullptr;
+    Isolate* bg_isolate = it->isolate();
+    if (bg_jwrite && !it->IsElement()) {
+      DirectHandle<Name> bg_name = it->name();
+      if (IsString(*bg_name) && Cast<String>(*bg_name)->length() == 1 &&
+          Cast<String>(*bg_name)->Get(0) == u'J') {
+        DirectHandle<JSAny> bg_recv = it->GetReceiver();
+        if (IsJSObject(*bg_recv)) {
+          DirectHandle<JSObject> bg_ro = Cast<JSObject>(bg_recv);
+          DirectHandle<Name> bg_ky = bg_isolate->factory()->NewStringFromAsciiChecked("Y");
+          MaybeHandle<Object> bg_y = Object::GetProperty(bg_isolate, bg_ro, bg_ky);
+          DirectHandle<Object> bg_yv;
+          if (bg_y.ToHandle(&bg_yv) && IsJSArray(*bg_yv)) {
+            Tagged<Object> bg_v = *value;
+            fprintf(stderr, "[JWRITE] recv=%p val=",
+                    reinterpret_cast<void*>(bg_ro.address()));
+            if (IsSmi(bg_v)) {
+              fprintf(stderr, "smi%lld", static_cast<long long>(Cast<Smi>(bg_v).value()));
+            } else if (IsHeapNumber(bg_v)) {
+              fprintf(stderr, "num%.6f", Cast<HeapNumber>(bg_v)->value());
+            } else {
+              fprintf(stderr, "%p", reinterpret_cast<void*>(bg_v.ptr()));
+            }
+            fprintf(stderr, "\\n");
+            for (JavaScriptStackFrameIterator bg_it(bg_isolate); !bg_it.done(); bg_it.Advance()) {
+              JavaScriptFrame* bg_f = bg_it.frame();
+              Tagged<Script> bg_sc = bg_f->script();
+              Tagged<Object> bg_src = bg_sc->source();
+              int bg_len = IsString(bg_src) ? Cast<String>(bg_src)->length() : -1;
+              Tagged<String> bg_fn = bg_f->function()->shared()->Name();
+              std::unique_ptr<char[]> bg_fnc = bg_fn->ToCString();
+              fprintf(stderr, "  [JFRM] fn=%s len=%d\\n", bg_fnc.get(), bg_len);
+            }
+            std::ostringstream bg_ss;
+            bg_isolate->PrintCurrentStackTrace(bg_ss);
+            fprintf(stderr, "%s", bg_ss.str().c_str());
+          }
+        }
+      }
+    }
+  }
+"""
+
+
 def ensure_cstdio(text: str) -> str:
     """Add the logging includes once, after the first include line."""
     need = [h for h in ("#include <cstdio>", "#include <cstdlib>", "#include <sstream>",
                         '#include "src/objects/script.h"', '#include "src/execution/frames.h"',
                         '#include "src/objects/objects.h"', '#include "src/objects/js-objects.h"',
-                        '#include "src/objects/name.h"', '#include "src/objects/js-array.h"')
+                        '#include "src/objects/name.h"', '#include "src/objects/js-array.h"',
+                        '#include "src/objects/heap-number.h"', '#include "src/objects/string.h"',
+                        '#include "src/objects/lookup.h"')
             if h not in text]
     if not need:
         return text
@@ -273,6 +333,7 @@ def main() -> None:
         (os.path.join(v8, "codegen", "compiler.cc"), EVAL_ANCHOR, EVAL_CODE),
         (os.path.join(v8, "execution", "messages.cc"), ERR_ANCHOR, ERR_CODE),
         (os.path.join(v8, "codegen", "compiler.cc"), EVAL_EVAL_ANCHOR, EVAL_EVAL_CODE),
+        (os.path.join(v8, "objects", "objects.cc"), JWRITE_ANCHOR, JWRITE_CODE),
     ]
     ok = True
     for path, anchor, code in targets:

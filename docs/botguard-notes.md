@@ -4459,3 +4459,37 @@ the shipped sidecar must not be edited. Markers land in `/root/chrome_instr.log`
 * `Lo`/`TY`/`uS` are HeapNumbers in Blink (epoch ms; `uS` = `timeOrigin`) and Smis in d8, so `P.T()`
   returns `uS + performance.now()` (a number) in Blink and `0 + now` in d8.
 
+## 107. `[JWRITE]`: the Smi is written by `vT` via `x.qw`, called from an eval'd snippet
+
+New hook in `v8/src/objects/objects.cc`, `Object::SetProperty(LookupIterator*, value, ...)`. That is the
+common entry for every *named* store - the store ICs call it directly from `ic/ic.cc:2295/2395/4641` -
+so `x.J = ...` and `this.J = ...` land there whether the property exists or is being added. Filter: the
+key is the one-character name `"J"` **and** the receiver carries a `"Y"` array (i.e. the VM core).
+Prints the value, the writer's frames and the printed stack; gate `BG_JWRITE=1`.
+
+One d8 mint (`d8jw.err`) gives 8 writes on the core:
+
+| # | value | writer (innermost first) |
+|---|-------|--------------------------|
+| 0,1 | core | `uu` (via `bW <- mY <- lb`) - this is `x.J = x` |
+| 2,3 | core | `ZK <- Ae <- k1 <- ...` |
+| 4 | **`smi159054`** | **`bW.vT <- length.x.qw <- eval <- Ae`(col 29753) `<- k1`** |
+| 5 | core | `YV <- Ae <- k1` |
+| 6 | core | the loop (`bW.eval [as K]`) at col 58421 - `G=this.J,this.J=this` (a==71) |
+| 7 | **`smi171716`** | the loop at col 58278 - `this.J=G` (a==42) |
+
+Two conclusions that change item 0:
+
+* **`x.qw` is called after all.** It is absent from the frame program text because the caller is an
+  `eval`: the field handler `function(G,I,Z,R,u){...;F(R,W,function(B){return eval(B)}(IU(m(G.J,Z))))}`
+  evals a decoded field value, and that snippet calls `x.qw(...)`. `qw` is
+  `function(G){return vT.call(this,78,G,7)}` and `vT` does `this.J=f` - so the argument becomes `J`.
+  `IU` is the trusted-types probe (`J.eval(f.createScript("1"))===1 ? createScript : fallback`), which
+  is why the snippet is only visible at runtime.
+* The loop's `this.J = G` (a==42) is the second Smi. `G` is the loop's parameter #30 (`np=44 na=1`, so
+  not passed) or the value a==71 saved from `this.J`; either way the loop is where the stale value is
+  re-committed.
+
+Caveat: an IC fast-path store to an existing property can bypass `Object::SetProperty` entirely, so the
+hook can miss individual writes; the 8 above are the ones that went through the slow path.
+

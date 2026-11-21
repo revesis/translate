@@ -44,10 +44,13 @@ read.
   `[EVALSRC]` (full source of >50 KB evals = the frame copy), `[ERRLOG]` (every engine error),
   `[ERRLOC]` (`Isolate::ComputeLocation` -> source len + line/col), `[ERRFRM]` (per-frame function name
   + script length + `np`/`na` + a field dump of the receiver and of every parameter: `Y`/`Pf`/`bU`/`I`,
-  `J` with an own-property flag, and ~34 more core fields, under `BG_ERRSTK`).
-* Rebuild after editing the patch: `cd ~/chromium/src/v8 && git checkout -- src/execution/messages.cc`
-  (only that file; the `[EVALLOG]`/`[EVALSRC]` hooks live in `compiler.cc` and are stable), then
-  `python3 ~/patch_chromium.py --src ~/chromium/src` and `ninja -C out/Rel d8 -j4` (~2-4 min, 5 steps).
+  `J` with an own-property flag and a `JisRecv` identity flag, and ~38 more core fields, under `BG_ERRSTK`),
+  `[JWRITE]` (every named store of the 1-char key `"J"` on an object with a `"Y"` array, with the
+  writer's frames and stack, under `BG_JWRITE`).
+* Rebuild after editing the patch: `cd ~/chromium/src/v8 && git checkout -- src/execution/messages.cc
+  src/objects/objects.cc` (only those two; the `[EVALLOG]`/`[EVALSRC]` hooks live in `compiler.cc` and
+  are stable), then `python3 ~/patch_chromium.py --src ~/chromium/src` and `ninja -C out/Rel d8 -j4`
+  (~2-4 min). For the browser, `ninja -C out/Rel chrome -j4` (~2 min incremental, 51 steps).
 * Run: `BG_ERRSTK=1 ./chromium/src/out/Rel/d8 --allow-natives-syntax d8_mint.js -- --material
   material.json --freq freq.txt`. The `--` before script args matters (d8 eats `--material` else).
   `material.json` / `d8_mint.js` / `freq.txt` live in `/root/` on the host; re-scp after local edits.
@@ -83,27 +86,25 @@ read.
   (host-surface options change nothing); a `trustedTypes` shim in d8 changes nothing; d8's inspector
   bridge does not arm on this build (`insp_pauses 0`).
 
-## Item 0 - active: what writes the Smi into the core's own `J`?
+## Item 0 - the Smi in `J`: `vT` via `x.qw`, and the loop's `this.J=G`
 
-The old question ("why are `Y`/`Pf` undefined") is answered: they are not (section 105). The live
-core - the interpreter loop's `this`, carrying `Nw`, the only property `uu` writes - has `Y=arr512`,
-`Pf=arr0`, `bU=arr22216` in d8. `uu` really does set `x.J = x`. The handlers fail because they are
-handed `G.J`, and in d8 `G.J` is an own Smi (`ownJ=1`): 159054 at the first error, 171716 from the
-second on. In Blink `G.J === G` and `G.J.bU` = 22216.
+Answered for the value, partly for the branch (section 107). `[JWRITE]` (a `BG_JWRITE=1` hook in
+`v8/src/objects/objects.cc`, `Object::SetProperty(LookupIterator*, ...)`, filtered on the 1-char name
+`"J"` plus a `"Y"` array on the receiver) gives 8 writes on the core per mint; the two that break it:
 
-So: name the write that replaces the core's self-referential `J` with a Smi. Candidates already
-measured (`docs/botguard-notes.md` section 105): `ZK` stores `T.J = T.A + Y`; `YV` saves/restores
-`f.J`; `vT` stores `this.J = f` but is reachable only through `x.qw`, which the frame program never
-calls; the loop's `a==42` writes `this.J = G` with `G` = `undefined` (`np=44 na=1`), and `a==71`
-writes `this.J = this` but only after `m(this,231)` succeeds. Two negatives: `J` is written only twice
-(159054, then 171716) and is not a clock (`WALL=0.13 s`, `uS=smi0`) nor the live read position (`m`
-keeps advancing while `J` stays 171716) - so it is one stale write, not a counter.
+* `smi159054` - `bW.vT` (`this.J = f`) `<- length.x.qw <- eval <- Ae`(col 29753) `<- k1`. So **`x.qw`
+  is called**, from an `eval`'d snippet - the field handler runs
+  `function(B){return eval(B)}(IU(m(G.J,Z)))`, and that snippet calls `x.qw`. `qw` is
+  `function(G){return vT.call(this,78,G,7)}`, so its argument becomes `J`. This is why grepping the
+  frame program for `qw` finds only the definition and the `Z==G.qw` comparison.
+* `smi171716` - the interpreter loop, `this.J = G` at a==42 (col 58278).
 
-**Acceptance criterion:** the value and the writing frame at the moment `J` stops being the core's
-self-reference. An engine-side `J`-write watch, or a per-state read of `this.J` inside the loop
-(`xj#`/`j42#`/`tj#` arms in `research/probe_j.py` are the Chrome-side starting point), closes it.
-Note `x.J=x` sits in `uu`'s second statement at frame offset 35999-36316; `research/probe_uu_condition.js`
-evaluates that condition in isolation.
+`Y`/`Pf` are never skipped (section 105), and both realms reach `J=159054` identically (section 106).
+They diverge afterwards: Blink's `J` becomes an object that has the tables but is not the loop's
+receiver (`JisRecv=0`), d8's stays the loop's 171716.
+
+**Next:** what the eval'd snippet actually is (dump `IU(m(G.J,Z))`), and why the loop's `G` is 171716
+in d8 but an object in Blink. **Acceptance:** the decoded field value, and the branch that sets `G`.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure (sections 65, 83).
 The only non-perturbing window is engine-level (the d8 hooks above).
