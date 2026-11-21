@@ -46,11 +46,12 @@ read.
   + script length + `np`/`na` + a field dump of the receiver and of every parameter: `Y`/`Pf`/`bU`/`I`,
   `J` with an own-property flag and a `JisRecv` identity flag, and ~38 more core fields, under `BG_ERRSTK`),
   `[JWRITE]` (every named store of the 1-char key `"J"` on an object with a `"Y"` array, with the
-  writer's frames and stack, under `BG_JWRITE`).
-* Rebuild after editing the patch: `cd ~/chromium/src/v8 && git checkout -- src/execution/messages.cc
-  src/objects/objects.cc` (only those two; the `[EVALLOG]`/`[EVALSRC]` hooks live in `compiler.cc` and
-  are stable), then `python3 ~/patch_chromium.py --src ~/chromium/src` and `ninja -C out/Rel d8 -j4`
-  (~2-4 min). For the browser, `ninja -C out/Rel chrome -j4` (~2 min incremental, 51 steps).
+  writer's frames and stack, under `BG_JWRITE`), `[EVALSM]` (full source of every eval < 2000 chars).
+* Rebuild after editing the patch: `cd ~/chromium/src/v8 && git checkout -- src/codegen/compiler.cc
+  src/execution/messages.cc src/objects/objects.cc` (the `[EVALLOG]`/`[EVALSM]` hooks live in
+  `compiler.cc`, the rest in `messages.cc`/`objects.cc`), then
+  `python3 ~/patch_chromium.py --src ~/chromium/src` and `ninja -C out/Rel d8 -j4` (~2-4 min).
+  For the browser, `ninja -C out/Rel chrome -j4` (~2 min incremental, 51 steps).
 * Run: `BG_ERRSTK=1 ./chromium/src/out/Rel/d8 --allow-natives-syntax d8_mint.js -- --material
   material.json --freq freq.txt`. The `--` before script args matters (d8 eats `--material` else).
   `material.json` / `d8_mint.js` / `freq.txt` live in `/root/` on the host; re-scp after local edits.
@@ -103,8 +104,16 @@ Answered for the value, partly for the branch (section 107). `[JWRITE]` (a `BG_J
 They diverge afterwards: Blink's `J` becomes an object that has the tables but is not the loop's
 receiver (`JisRecv=0`), d8's stays the loop's 171716.
 
-**Next:** what the eval'd snippet actually is (dump `IU(m(G.J,Z))`), and why the loop's `G` is 171716
-in d8 but an object in Blink. **Acceptance:** the decoded field value, and the branch that sets `G`.
+**Answered (section 108):** `IU` (the trusted-types probe) is *not* in the `qw` path. The caller is the
+209-char handler, `Z.apply(R,u.H)` with `Z == G.qw` and `u = vo(59,G,2,0)`; `vo` decodes its arguments
+from the field store (`E = f["integCheckBypass"] || {}`), and `Y[345]` is the bit position, which is the
+value `qw` receives. So **`x.J` is the VM's instruction pointer** (a bit offset): `uu` sets it to the
+core as the sentinel `ib`/`PX` test with `x.J==x`, and the interpreter then overwrites it with the PC
+via `x.qw(<pc>)` -> `vT` -> `this.J = <pc>`. The mining handlers read `G.J` expecting the core and get
+the PC - that is the mechanism of all six errors.
+
+**Next:** why Blink recovers (section 106: after the first error its `J` becomes an object that has the
+tables but is not the loop's receiver) while d8 keeps the number.
 
 **Trap.** Never observe by patching an eval site or any interp text you then measure (sections 65, 83).
 The only non-perturbing window is engine-level (the d8 hooks above).

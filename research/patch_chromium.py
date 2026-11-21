@@ -171,6 +171,48 @@ ERR_CODE = """  // botguard research: log the engine-constructed error text (wha
           dump_j(ro, kJ);
           dump_extra(ro);
           fprintf(stderr, "\\n");
+          // Each Y[i] is a wrapper whose `create()` closes over the payload the VM stored. Reading
+          // the closure needs a call, so do it once, here in the error path (never inside a store).
+          static bool bg_payload_done = false;
+          if (!bg_payload_done) {
+            DirectHandle<Object> bg_yv;
+            MaybeHandle<Object> bg_yh = Object::GetProperty(isolate, ro, kY);
+            if (bg_yh.ToHandle(&bg_yv) && IsJSArray(*bg_yv)) {
+              bg_payload_done = true;
+              DirectHandle<JSArray> bg_arr = Cast<JSArray>(bg_yv);
+              Tagged<Number> bg_alen = bg_arr->length();
+              if (IsSmi(bg_alen)) {
+                int bg_n = static_cast<int>(Cast<Smi>(bg_alen).value());
+                DirectHandle<Name> bg_kc =
+                    isolate->factory()->NewStringFromAsciiChecked("create");
+                int bg_shown = 0;
+                for (int bg_i = 0; bg_i < bg_n && bg_i < 700 && bg_shown < 80; bg_i++) {
+                  MaybeHandle<Object> bg_e = Object::GetElement(isolate, bg_arr, bg_i);
+                  DirectHandle<Object> bg_ev;
+                  if (!bg_e.ToHandle(&bg_ev) || !IsJSObject(*bg_ev)) continue;
+                  DirectHandle<JSObject> bg_eo = Cast<JSObject>(bg_ev);
+                  MaybeHandle<Object> bg_cf = Object::GetProperty(isolate, bg_eo, bg_kc);
+                  DirectHandle<Object> bg_cfv;
+                  if (!bg_cf.ToHandle(&bg_cfv) || !IsCallable(*bg_cfv)) continue;
+                  MaybeHandle<Object> bg_r = Execution::Call(
+                      isolate, bg_cfv, bg_ev, base::Vector<const DirectHandle<Object>>());
+                  DirectHandle<Object> bg_rv;
+                  if (!bg_r.ToHandle(&bg_rv)) continue;
+                  if (IsSmi(*bg_rv)) {
+                    fprintf(stderr, " [Y%d=smi%lld]", bg_i,
+                            static_cast<long long>(Cast<Smi>(*bg_rv).value()));
+                  } else if (IsHeapNumber(*bg_rv)) {
+                    fprintf(stderr, " [Y%d=num%.3f]", bg_i,
+                            Cast<HeapNumber>(*bg_rv)->value());
+                  } else {
+                    continue;
+                  }
+                  bg_shown++;
+                }
+                fprintf(stderr, "\\n");
+              }
+            }
+          }
         }
         if (np > 20 || (slen > 0 && slen < 1000 && np > 0)) {
           for (uint32_t i = 0; i < np; i++) {
@@ -235,7 +277,51 @@ JWRITE_CODE = """  // botguard research: log stores of the name "J" on an object
             fprintf(stderr, "[JWRITE] recv=%p val=",
                     reinterpret_cast<void*>(bg_ro.address()));
             if (IsSmi(bg_v)) {
-              fprintf(stderr, "smi%lld", static_cast<long long>(Cast<Smi>(bg_v).value()));
+              long long bg_smi = static_cast<long long>(Cast<Smi>(bg_v).value());
+              fprintf(stderr, "smi%lld", bg_smi);
+              // `vo` builds the argument list from the core's field store, so dump that store: it
+              // names where the value the VM hands to `qw` came from.
+              DirectHandle<Name> bg_ky2 = bg_isolate->factory()->NewStringFromAsciiChecked("Y");
+              MaybeHandle<Object> bg_y2 = Object::GetProperty(bg_isolate, bg_ro, bg_ky2);
+              DirectHandle<Object> bg_y2v;
+              if (bg_y2.ToHandle(&bg_y2v) && IsJSArray(*bg_y2v)) {
+                DirectHandle<JSArray> bg_arr = Cast<JSArray>(bg_y2v);
+                Tagged<Number> bg_alen = bg_arr->length();
+                if (IsSmi(bg_alen)) {
+                  int bg_n = static_cast<int>(Cast<Smi>(bg_alen).value());
+                  fprintf(stderr, " Ylen=%d", bg_n);
+                  int bg_shown = 0;
+                  DirectHandle<Name> bg_kv =
+                      bg_isolate->factory()->NewStringFromAsciiChecked("value");
+                  for (int bg_i = 0; bg_i < bg_n && bg_i < 600 && bg_shown < 90; bg_i++) {
+                    MaybeHandle<Object> bg_e = Object::GetElement(bg_isolate, bg_arr, bg_i);
+                    DirectHandle<Object> bg_ev;
+                    if (!bg_e.ToHandle(&bg_ev)) continue;
+                    if (IsSmi(*bg_ev)) {
+                      fprintf(stderr, " [%d]=smi%lld", bg_i,
+                              static_cast<long long>(Cast<Smi>(*bg_ev).value()));
+                      bg_shown++;
+                      continue;
+                    }
+                    if (!IsJSObject(*bg_ev)) continue;
+                    // Field entries are wrapper objects; their `value` slot carries the payload.
+                    DirectHandle<JSObject> bg_eo = Cast<JSObject>(bg_ev);
+                    MaybeHandle<Object> bg_pv = Object::GetProperty(bg_isolate, bg_eo, bg_kv);
+                    DirectHandle<Object> bg_pvv;
+                    if (!bg_pv.ToHandle(&bg_pvv)) continue;
+                    if (IsSmi(*bg_pvv)) {
+                      fprintf(stderr, " [%d].value=smi%lld", bg_i,
+                              static_cast<long long>(Cast<Smi>(*bg_pvv).value()));
+                    } else if (IsHeapNumber(*bg_pvv)) {
+                      fprintf(stderr, " [%d].value=num%.6f", bg_i,
+                              Cast<HeapNumber>(*bg_pvv)->value());
+                    } else {
+                      continue;
+                    }
+                    bg_shown++;
+                  }
+                }
+              }
             } else if (IsHeapNumber(bg_v)) {
               fprintf(stderr, "num%.6f", Cast<HeapNumber>(bg_v)->value());
             } else {
@@ -269,7 +355,8 @@ def ensure_cstdio(text: str) -> str:
                         '#include "src/objects/objects.h"', '#include "src/objects/js-objects.h"',
                         '#include "src/objects/name.h"', '#include "src/objects/js-array.h"',
                         '#include "src/objects/heap-number.h"', '#include "src/objects/string.h"',
-                        '#include "src/objects/lookup.h"')
+                        '#include "src/objects/lookup.h"', '#include "src/execution/execution.h"',
+                        '#include "src/base/vector.h"')
             if h not in text]
     if not need:
         return text
@@ -318,6 +405,11 @@ EVAL_EVAL_CODE = """  // botguard research: log every eval-compiled source (this
     if (src_len > 50000) {
       std::unique_ptr<char[]> full = source->ToCString();
       fprintf(stderr, "[EVALSRC] %s\\n[EVALSRC-END]\\n", full.get());
+    } else if (src_len < 2000) {
+      // The VM's own handlers and the snippets it evals are all small; dump them in full so the
+      // generated code (e.g. whatever `IU` returns) can be read instead of guessed from a 120-char head.
+      std::unique_ptr<char[]> full = source->ToCString();
+      fprintf(stderr, "[EVALSM] %s\\n[EVALSM-END]\\n", full.get());
     }
   }
 """

@@ -4503,3 +4503,42 @@ is prepended to the frame source, so the same program shows up as 62906 / 63326 
 depending on the load; the columns are identical, only the line numbers shift. Compare programs by
 content after stripping the leading newlines, never by length.
 
+## 108. `IU` is not in the `qw` path; `x.J` is the VM's bit position
+
+`[EVALSM]` (the `[EVALLOG]` hook now dumps every eval shorter than 2000 chars in full) settles what
+calls `x.qw`:
+
+* `IU` is the trusted-types probe -
+  `IU=function(J,f){return (f=Iz(47,"gc")) && J.eval(f.createScript("1"))===1
+  ? function(x){return f.createScript(x)} : function(x){return ""+x}}(G1)`.
+  In d8 (no Trusted Types) it is `String`; in Blink it wraps into a TrustedScript.
+* The only eval'd code that references `qw` is the **209-char handler**
+  `function(G,I,Z,R,u,B){...B==15?(tv(u.L5,A,Z.apply(R,u.H)),...):B==72?B=G.J==G||Z==G.qw&&R==X?15:47:...
+  B==84&&(u=vo(59,G,2,0),Z=u.gM,R=u.wM,B=72)}`. It calls `Z.apply(R,u.H)` with `Z == G.qw`, so the
+  argument is `u.H[0]` from `vo(59,G,2,0)`. The handler that uses `IU` + `eval(B)` (158 chars,
+  `eval(B)}(IU(m(G.J,Z)))`) is a different field's handler and did not fire here.
+* `vo` reads `E = f["integCheckBypass"] || {}` (`Et = String.fromCharCode(...)` = "integCheckBypass"),
+  then `E.H.push(c(f,J))` and `E.H[V]=m(f,E.H[V])`, i.e. it decodes its arguments out of the core's
+  field store.
+
+The field payloads are closures - `D` builds `Y.create = function(){return x}` and
+`Y.concat = function(K){x=K}` - so a plain property dump sees nothing (`Ylen=503`, no numeric
+entries). `[ERRFRM]` now calls `create()` once, on the first frame that has a `Y` array:
+
+```
+[Y128=smi159304] [Y345=smi159314]
+```
+
+Only fields 128 and 345 hold numbers. `Y[345]` is the **bit position**: `TQ` does
+`if((H=m(f,345),H)>=f.I)throw[fh,31]`, and `I = bU.length<<3`. The value the VM handed to `qw` at the
+first error was 159054, i.e. the same quantity an instant earlier (it advances to 159314 by the time
+of the error).
+
+**So `x.J` is the VM's instruction pointer (a bit offset), not merely a self-reference sentinel.**
+`uu` sets `x.J = x` as the sentinel that `ib`/`PX` test with `x.J==x`; the interpreter then calls
+`x.qw(<pc>)` -> `vT` -> `this.J = <pc>`, and the mining handlers - which read `G.J` expecting the core -
+receive the PC. That is the whole mechanism of the six errors.
+
+Open: why Blink recovers (section 106: after the first error its `J` becomes an object that has the
+tables but is not the loop's receiver) while d8 keeps the number.
+
